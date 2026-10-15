@@ -95,7 +95,7 @@ devpilot run "Add type hints to inventory.py" --repo owner/name
 # Solve a GitHub issue and open a pull request that closes it
 devpilot issue owner/name 12
 
-# Start the web UI at http://127.0.0.1:8000
+# Start the web UI at http://127.0.0.1:8000 (shows the plan and live agent steps)
 devpilot web
 
 # Run the benchmark (all tasks, or a subset by prefix)
@@ -103,13 +103,25 @@ python benchmarks/run_benchmark.py
 python benchmarks/run_benchmark.py --tasks 01 04
 ```
 
+![DevPilot web UI](docs/web-ui.png)
+
 Settings come from `.env` (see `.env.example`): `DEVPILOT_MODEL`, `DEVPILOT_MAX_STEPS`, `DEVPILOT_MAX_COST_USD`, `DEVPILOT_MAX_TOKENS`, `DEVPILOT_COMMAND_TIMEOUT`, `DEVPILOT_SANDBOX_NETWORK` and more.
 
 ## Benchmark results
 
-BENCHMARK_RESULTS
+Real runs inside the Docker sandbox, graded by the hidden tests (from [benchmarks/results.md](benchmarks/results.md)):
 
-Each task starts from a stub or buggy module with a couple of visible tests. A task is solved only if a separate hidden test suite, copied in after the agent finishes, passes in the sandbox. Costs are estimates from token counts and the provider's list prices; these runs were on the Gemini free tier, so they cost nothing.
+| Task | Model | Solved | Steps | Est. cost (USD) |
+|---|---|---|---|---|
+| 04_median_bug (fix a buggy function) | `gemini-3.6-flash` | yes | 11 | 0.1035 |
+| 01_slugify (implement from a spec) | `gemini-3-flash-preview` | yes | 12 | 0.0352 |
+| **Total** | | **2/2** | **23** | **0.1387** |
+
+Each task starts from a stub or buggy module with a couple of visible tests. A task is solved only if a separate hidden test suite, copied in after the agent finishes, passes in the sandbox. Every hidden suite was checked against a reference solution: it fails on the starting code and passes on a correct one.
+
+These runs used the Gemini free tier, which allows only 20 requests per model per day, so only 2 of the 8 tasks have been run so far; the other six are ready to run with `python benchmarks/run_benchmark.py`. Costs are estimates from token counts and each model's paid list price; the free-tier runs themselves cost nothing. The Claude provider is covered by the unit tests with a mocked API but has not yet been benchmarked live.
+
+**Live GitHub test.** `devpilot issue Saipavanavsp/devpilot-demo 1` (on `gemini-3.1-flash-lite`) read [issue #1](https://github.com/Saipavanavsp/devpilot-demo/issues/1), reproduced the bug with a test, fixed `Inventory.remove()`, added four tests and opened [pull request #2](https://github.com/Saipavanavsp/devpilot-demo/pull/2) in 13 steps (estimated $0.01).
 
 ## Safety design
 
