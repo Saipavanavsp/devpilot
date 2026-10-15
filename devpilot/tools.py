@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ MAX_READ_CHARS = 40_000
 MAX_LISTED_FILES = 500
 IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "node_modules"}
 DEFAULT_TEST_COMMAND = "python -m pytest -q"
+PYTEST_PATTERN = re.compile(r"\bpytest\b")
 
 TOOL_SPECS: list[dict[str, Any]] = [
     {
@@ -235,6 +237,9 @@ class ToolExecutor:
             return ToolResult(f"Command blocked by safety policy: {reason}.", is_error=True)
         seconds = min(timeout or self.command_timeout, self.command_timeout)
         result = self.sandbox.run(command, timeout=seconds)
+        # Models often run pytest directly instead of calling run_tests; count those runs too.
+        if PYTEST_PATTERN.search(command):
+            self.last_tests_passed = result.exit_code == 0
         return ToolResult(_format_command_result(result), is_error=result.timed_out)
 
     def run_tests(self, target: str | None = None) -> ToolResult:

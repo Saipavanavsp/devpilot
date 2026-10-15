@@ -110,6 +110,15 @@ def test_run_tests_tracks_outcome(executor, fake_sandbox):
     assert executor.last_tests_passed is False
 
 
+def test_pytest_via_run_command_also_tracks_outcome(executor, fake_sandbox):
+    fake_sandbox.results.append(CommandResult(exit_code=0, output="3 passed"))
+    executor.execute("run_command", {"command": "python3 -m pytest tests/test_app.py"})
+    assert executor.last_tests_passed is True
+
+    executor.execute("run_command", {"command": "ls"})
+    assert executor.last_tests_passed is True
+
+
 def test_finish_returns_summary(executor):
     result = executor.execute("finish", {"summary": "Fixed add()"})
 
