@@ -5,13 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "devpilot"
 version = "0.1.0"
-description = "An autonomous software engineering agent that plans, codes, tests in Docker, and opens pull requests."
+description = "An autonomous software engineering agent that plans, codes, tests in Docker and opens pull requests."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Sai Pavan" }]
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=1.14",
+    "google-genai>=2.31",
     "docker>=7.1",
     "PyGithub>=2.5",
     "python-dotenv>=1.0",

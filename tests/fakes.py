@@ -3,6 +3,8 @@ from itertools import count
 from types import SimpleNamespace
 from typing import Any
 
+from devpilot.providers.claude import ClaudeProvider
+
 _ids = count(1)
 
 
@@ -43,8 +45,13 @@ class FakeAnthropic:
         self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
 
     def _create(self, **params: Any) -> SimpleNamespace:
-        # Copy the message list, since the agent keeps appending to the same object.
+        # Copy the message list, since the conversation keeps appending to the same object.
         self.calls.append({**params, "messages": list(params.get("messages", []))})
         if not self.responses:
             raise AssertionError("FakeAnthropic ran out of scripted responses")
         return self.responses.pop(0)
+
+
+def claude_provider(responses: list[SimpleNamespace]) -> tuple[ClaudeProvider, FakeAnthropic]:
+    client = FakeAnthropic(responses)
+    return ClaudeProvider(client, "claude-sonnet-5-5"), client  # type: ignore[arg-type]

@@ -109,7 +109,6 @@ class ToolError(Exception):
 class ToolResult:
     content: str
     is_error: bool = False
-    finished: bool = False
 
 
 def truncate_middle(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
@@ -247,4 +246,4 @@ class ToolExecutor:
         return ToolResult(_format_command_result(result))
 
     def finish(self, summary: str) -> ToolResult:
-        return ToolResult(summary, finished=True)
+        return ToolResult(summary)

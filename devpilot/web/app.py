@@ -104,6 +104,7 @@ def create_app(settings: Settings, runner: Runner | None = None) -> FastAPI:
     @app.get("/api/config")
     def config() -> dict[str, Any]:
         return {
+            "provider": settings.provider,
             "model": settings.model,
             "max_steps": settings.max_steps,
             "max_cost_usd": settings.max_cost_usd,

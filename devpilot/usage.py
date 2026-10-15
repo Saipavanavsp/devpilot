@@ -1,5 +1,4 @@
 from dataclasses import asdict, dataclass
-from typing import Any
 
 from devpilot.config import ModelPrice
 
@@ -10,15 +9,6 @@ class Usage:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
-
-    @classmethod
-    def from_api(cls, usage: Any) -> "Usage":
-        return cls(
-            input_tokens=usage.input_tokens or 0,
-            output_tokens=usage.output_tokens or 0,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", None) or 0,
-            cache_write_tokens=getattr(usage, "cache_creation_input_tokens", None) or 0,
-        )
 
     def add(self, other: "Usage") -> None:
         self.input_tokens += other.input_tokens

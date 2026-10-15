@@ -110,10 +110,10 @@ def test_run_tests_tracks_outcome(executor, fake_sandbox):
     assert executor.last_tests_passed is False
 
 
-def test_finish_marks_result_finished(executor):
+def test_finish_returns_summary(executor):
     result = executor.execute("finish", {"summary": "Fixed add()"})
 
-    assert result.finished
+    assert not result.is_error
     assert result.content == "Fixed add()"
 
 

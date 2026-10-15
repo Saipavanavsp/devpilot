@@ -18,7 +18,7 @@ from devpilot.github_client import (
 )
 from devpilot.pipeline import issue_to_task, pr_title, run_on_github
 from tests.conftest import FakeSandbox
-from tests.fakes import FakeAnthropic, plan_response, response, tool_use
+from tests.fakes import claude_provider, plan_response, response, tool_use
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -145,7 +145,7 @@ def test_issue_mode_end_to_end_opens_pr(tmp_path, remote):
     github.clone.side_effect = lambda name, dest: GitRepo.clone(str(remote), dest)
     github.commit_identity.return_value = ("DevPilot", "bot@example.com")
     github.create_pull_request.return_value = "https://github.com/o/r/pull/9"
-    client = FakeAnthropic(
+    provider, _ = claude_provider(
         [
             plan_response("Fix add in calc.py", "Run tests"),
             response(tool_use("edit_file", path="calc.py", old_text="a - b", new_text="a + b")),
@@ -163,7 +163,7 @@ def test_issue_mode_end_to_end_opens_pr(tmp_path, remote):
         "o/r",
         settings,
         issue_number=5,
-        client=client,
+        provider=provider,
         github=github,
         sandbox_factory=fake_sandbox_factory,
     )
@@ -182,7 +182,7 @@ def test_issue_mode_end_to_end_opens_pr(tmp_path, remote):
 def test_no_pr_when_nothing_changed(tmp_path, remote):
     github = MagicMock(spec=GitHubClient)
     github.clone.side_effect = lambda name, dest: GitRepo.clone(str(remote), dest)
-    client = FakeAnthropic(
+    provider, _ = claude_provider(
         [plan_response("Look around"), response(tool_use("finish", summary="Nothing to do."))]
     )
     settings = Settings(
@@ -193,7 +193,7 @@ def test_no_pr_when_nothing_changed(tmp_path, remote):
         "o/r",
         settings,
         task="Check the code",
-        client=client,
+        provider=provider,
         github=github,
         sandbox_factory=fake_sandbox_factory,
     )

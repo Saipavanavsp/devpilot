@@ -4,8 +4,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import anthropic
-
 from devpilot.agent import Agent
 from devpilot.config import Settings
 from devpilot.github_client import (
@@ -15,8 +13,8 @@ from devpilot.github_client import (
     IssueInfo,
     validate_repo_name,
 )
-from devpilot.llm import make_client
 from devpilot.planner import make_plan
+from devpilot.providers import Provider, make_provider
 from devpilot.runlog import Listener, RunLog, new_run_id
 from devpilot.sandbox import DockerSandbox
 from devpilot.tools import ToolExecutor
@@ -84,12 +82,12 @@ def _solve(
     workspace: Path,
     settings: Settings,
     log: RunLog,
-    client: anthropic.Anthropic | None,
+    provider: Provider | None,
     sandbox_factory: SandboxFactory,
 ) -> RunOutcome:
     log.update(workspace=str(workspace))
     try:
-        client = client or make_client(settings)
+        provider = provider or make_provider(settings)
         with sandbox_factory(
             workspace,
             base_image=settings.sandbox_image,
@@ -97,9 +95,9 @@ def _solve(
             timeout=settings.command_timeout,
         ) as sandbox:
             tools = ToolExecutor(workspace, sandbox, command_timeout=settings.command_timeout)
-            plan, plan_usage = make_plan(client, settings, task, tools.list_files().content)
+            plan, plan_usage = make_plan(provider, task, tools.list_files().content)
             log.set_plan(plan)
-            result = Agent(client, settings, tools, log, usage=plan_usage).run(task, plan)
+            result = Agent(provider, settings, tools, log, usage=plan_usage).run(task, plan)
     except Exception as exc:
         log.finish("error", summary=f"{type(exc).__name__}: {exc}")
         raise
@@ -129,7 +127,7 @@ def run_task(
     workspace: Path,
     settings: Settings,
     *,
-    client: anthropic.Anthropic | None = None,
+    provider: Provider | None = None,
     listeners: Iterable[Listener] = (),
     sandbox_factory: SandboxFactory = DockerSandbox,
 ) -> RunOutcome:
@@ -137,7 +135,7 @@ def run_task(
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     log = RunLog(settings.runs_dir, task=task, model=settings.model, listeners=listeners)
-    return _solve(task, workspace, settings, log, client, sandbox_factory)
+    return _solve(task, workspace, settings, log, provider, sandbox_factory)
 
 
 def run_on_github(
@@ -147,7 +145,7 @@ def run_on_github(
     task: str | None = None,
     issue_number: int | None = None,
     open_pr: bool = True,
-    client: anthropic.Anthropic | None = None,
+    provider: Provider | None = None,
     github: GitHubClient | None = None,
     listeners: Iterable[Listener] = (),
     sandbox_factory: SandboxFactory = DockerSandbox,
@@ -173,7 +171,7 @@ def run_on_github(
         settings.runs_dir, task=task_text, model=settings.model, run_id=run_id, listeners=listeners
     )
     log.update(repo=repo_name, issue=issue_number, branch=branch)
-    outcome = _solve(task_text, workspace, settings, log, client, sandbox_factory)
+    outcome = _solve(task_text, workspace, settings, log, provider, sandbox_factory)
     outcome.branch = branch
 
     if open_pr and outcome.status == "finished" and repo.has_changes():

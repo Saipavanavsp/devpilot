@@ -98,7 +98,7 @@ def main() -> int:
     args = parser.parse_args()
 
     settings = load_settings(args.env_file)
-    settings.require_anthropic_key()
+    settings.require_api_key()
     tasks = discover_tasks(args.tasks)
     stamp = f"{datetime.now(UTC):%Y%m%d-%H%M%S}"
 

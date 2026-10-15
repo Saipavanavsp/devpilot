@@ -7,6 +7,7 @@ from devpilot.config import ConfigError, load_settings
 from devpilot.github_client import GitHubError
 from devpilot.pipeline import RunOutcome, run_on_github, run_task
 from devpilot.planner import PlanningError
+from devpilot.providers import ProviderError
 from devpilot.runlog import Event
 from devpilot.sandbox import SandboxError
 
@@ -93,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             outcome = run_task(args.task, args.workspace, settings, listeners=[print_event])
-    except (ConfigError, GitHubError, SandboxError, PlanningError) as exc:
+    except (ConfigError, GitHubError, SandboxError, PlanningError, ProviderError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print_outcome(outcome)
