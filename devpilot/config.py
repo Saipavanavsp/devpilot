@@ -25,6 +25,8 @@ MODEL_PRICES: dict[str, ModelPrice] = {
     "claude-haiku-5-5": ModelPrice(input=0.10, output=0.50, cache_read=0.01, cache_write=0.125),
     "claude-fable-5-1": ModelPrice(input=10.00, output=50.00, cache_read=0.25, cache_write=12.50),
     "gemini-3.6-flash": ModelPrice(input=1.50, output=7.50, cache_read=0.15, cache_write=0.0),
+    "gemini-3-flash-preview": ModelPrice(input=0.50, output=3.00, cache_read=0.05, cache_write=0.0),
+    "gemini-3.1-flash-lite": ModelPrice(input=0.25, output=1.50, cache_read=0.025, cache_write=0.0),
 }
 
 # Unknown models are priced at the most expensive tier so the cost limit errs on the safe side.

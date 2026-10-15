@@ -108,6 +108,8 @@ def main() -> int:
         result = run_one(task_dir, settings, stamp)
         print(f"  solved={result.solved} status={result.status} steps={result.steps} "
               f"cost=${result.cost_usd:.4f}", flush=True)  # fmt: skip
+        if result.error:
+            print(f"  error: {result.error[:300]}", flush=True)
         results.append(result)
 
     table = results_table(results, settings.model)
@@ -115,8 +117,12 @@ def main() -> int:
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     report = settings.runs_dir / f"benchmark-{stamp}.json"
     report.write_text(json.dumps([asdict(r) for r in results], indent=2), encoding="utf-8")
-    RESULTS_FILE.write_text(f"# Benchmark results\n\nRun {stamp} UTC.\n\n{table}\n", "utf-8")
-    print(f"\nSaved {report} and {RESULTS_FILE}")
+    # Append, so runs with different models or task subsets are all kept.
+    if not RESULTS_FILE.exists():
+        RESULTS_FILE.write_text("# Benchmark results\n", encoding="utf-8")
+    with RESULTS_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n## Run {stamp} UTC\n\n{table}\n")
+    print(f"\nSaved {report} and appended to {RESULTS_FILE}")
     return 0 if all(result.solved for result in results) else 1
 
 

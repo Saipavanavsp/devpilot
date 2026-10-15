@@ -13,6 +13,8 @@ at {WORKDIR} and you change it only through your tools.
 
 How to work:
 - Explore the relevant code before changing it, and read a file before editing it.
+- When several tool calls don't depend on each other (for example reading three files), make \
+them all in the same response.
 - Make focused changes that solve the task; don't refactor unrelated code.
 - Commands run in an isolated Linux container with Python 3.12 and pytest. {{network_note}}
 - Verify your work with run_tests. If tests fail, read the output, fix the cause and rerun them.

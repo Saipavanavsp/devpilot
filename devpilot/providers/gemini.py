@@ -13,7 +13,7 @@ THINKING_LEVELS = {"low": "low", "medium": "medium", "high": "high", "xhigh": "h
 
 # The free tier allows only a few requests per minute, so back off generously on 429s.
 RETRY_OPTIONS = types.HttpRetryOptions(
-    attempts=8, initial_delay=10.0, max_delay=90.0, http_status_codes=[429, 500, 503]
+    attempts=5, initial_delay=10.0, max_delay=60.0, http_status_codes=[429, 500, 503]
 )
 
 
