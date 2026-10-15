@@ -1,10 +1,48 @@
 # DevPilot
 
+[![CI](https://github.com/Saipavanavsp/devpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Saipavanavsp/devpilot/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+[![Ruff](https://img.shields.io/badge/code%20style-ruff-261230)](https://github.com/astral-sh/ruff)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 DevPilot is an autonomous coding agent. Give it a task or a GitHub issue and it writes a plan, reads and edits the code, runs the tests inside a locked-down Docker container, fixes what fails, and opens a pull request.
 
 It is written from scratch in Python on top of the Claude Messages API with tool use, with Google Gemini as an alternative provider. It's inspired by OpenHands and Devin, but it's deliberately small: about 1,500 lines of Python you can read in one sitting.
 
-Author: Sai Pavan
+**Author:** Sai Pavan  
+**Live example:** [pull request opened by DevPilot](https://github.com/Saipavanavsp/devpilot-demo/pull/2) for [this issue](https://github.com/Saipavanavsp/devpilot-demo/issues/1)
+
+**Tech stack:** Python 3.12, Claude Messages API (tool use, structured outputs), Gemini API, Docker SDK, PyGithub, FastAPI with Server-Sent Events, pytest, ruff, GitHub Actions, gitleaks.
+
+## Contents
+
+- [Screenshots](#screenshots)
+- [Features](#features)
+- [Architecture](#architecture)
+- [How the agent loop works](#how-the-agent-loop-works)
+- [Setup (Windows with WSL)](#setup-windows-with-wsl)
+- [Usage](#usage)
+- [Benchmark results](#benchmark-results)
+- [Safety design](#safety-design)
+- [Future improvements](#future-improvements)
+
+## Screenshots
+
+**Web UI during a real run.** The plan on the left; each agent step streams in live on the right with its tool input and output, token count and running cost.
+
+![Web UI showing a finished run](docs/images/web-ui-run.png)
+
+**Issue mode from the CLI.** DevPilot read GitHub issue #1, reproduced the bug with a test, fixed it, ran the tests in Docker and opened a pull request. (This run was made before `run_command` pytest runs counted toward "Tests passing", hence `None`; the tests did pass.)
+
+![CLI output of devpilot issue](docs/images/cli-issue-run.png)
+
+**The pull request it opened**, with summary, plan, diff stat and verification:
+
+![Pull request opened by DevPilot](docs/images/pull-request.png)
+
+**Test suite and lint**:
+
+![pytest and ruff output](docs/images/tests-and-lint.png)
 
 ## Features
 
@@ -103,8 +141,6 @@ python benchmarks/run_benchmark.py
 python benchmarks/run_benchmark.py --tasks 01 04
 ```
 
-![DevPilot web UI](docs/web-ui.png)
-
 Settings come from `.env` (see `.env.example`): `DEVPILOT_MODEL`, `DEVPILOT_MAX_STEPS`, `DEVPILOT_MAX_COST_USD`, `DEVPILOT_MAX_TOKENS`, `DEVPILOT_COMMAND_TIMEOUT`, `DEVPILOT_SANDBOX_NETWORK` and more.
 
 ## Benchmark results
@@ -155,8 +191,13 @@ devpilot/
   web/              FastAPI app and single-page UI
 benchmarks/         tasks and the benchmark runner
 tests/              pytest suite
-docs/               architecture notes
+docs/               architecture notes and screenshots
+.github/            CI workflow, issue and PR templates
 ```
+
+## Security
+
+Keys live only in a local, gitignored `.env`; CI scans every push with gitleaks, and pre-commit hooks block secrets before they are committed. Details in [SECURITY.md](SECURITY.md). Contribution guidelines are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Future improvements
 
