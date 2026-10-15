@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DevPilot</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6a7385; --border: #e2e5eb;
+    --accent: #2f5bd3; --ok: #1f8a4c; --err: #c23a3a; --warn: #a86a00; --code: #f1f3f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1e26; --text: #e4e7ee; --muted: #8b93a5; --border: #2a303c;
+      --accent: #7c9cff; --ok: #4cc584; --err: #ff7474; --warn: #e3a83a; --code: #222733;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
+           display: flex; align-items: baseline; gap: 16px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 20px;
+         padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+           padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+       margin: 0 0 10px; }
+  label { display: block; font-weight: 600; margin: 10px 0 4px; }
+  textarea, input[type=text] { width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+       border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  textarea { min-height: 120px; resize: vertical; }
+  .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-weight: 400; }
+  button { margin-top: 14px; width: 100%; padding: 9px; border: 0; border-radius: 6px;
+           background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  ol.plan { margin: 0; padding-left: 20px; }
+  ol.plan li { margin-bottom: 4px; }
+  .status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px;
+            font-weight: 600; border: 1px solid currentColor; }
+  .status.running { color: var(--accent); } .status.finished { color: var(--ok); }
+  .status.error, .status.refused { color: var(--err); }
+  .status.max_steps, .status.budget_exceeded { color: var(--warn); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .stat { background: var(--bg); border-radius: 6px; padding: 8px; }
+  .stat b { display: block; font-size: 16px; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .step { border-left: 3px solid var(--border); padding: 4px 0 4px 14px; margin-bottom: 14px; }
+  .step-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+  .thought { white-space: pre-wrap; margin: 4px 0; }
+  .call { margin: 6px 0; }
+  .call summary { cursor: pointer; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  .call.err summary { color: var(--err); }
+  pre { background: var(--code); padding: 8px 10px; border-radius: 6px; overflow-x: auto;
+        font-size: 12px; margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; }
+  .summary { white-space: pre-wrap; }
+  a { color: var(--accent); }
+  .empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>DevPilot</h1>
+  <span class="meta" id="config"></span>
+</header>
+<main>
+  <section>
+    <form class="panel" id="run-form">
+      <h2>New run</h2>
+      <label for="task">Task</label>
+      <textarea id="task" required placeholder="Add a function slugify(text) in text_utils.py with tests"></textarea>
+      <label for="repo">GitHub repository (optional)</label>
+      <input type="text" id="repo" placeholder="owner/name">
+      <div class="hint">Leave empty to work in a fresh local workspace.</div>
+      <label class="check"><input type="checkbox" id="open-pr" checked> Open a pull request</label>
+      <button type="submit" id="start">Run agent</button>
+    </form>
+    <div class="panel">
+      <h2>Plan</h2>
+      <div id="plan" class="empty">The plan appears here once the run starts.</div>
+    </div>
+    <div class="panel" id="result-panel" hidden>
+      <h2>Result</h2>
+      <div><span class="status" id="status">running</span></div>
+      <div class="stats">
+        <div class="stat"><b id="stat-steps">0</b><span>steps</span></div>
+        <div class="stat"><b id="stat-cost">$0.00</b><span>est. cost</span></div>
+        <div class="stat"><b id="stat-tests">-</b><span>tests</span></div>
+      </div>
+      <p id="pr"></p>
+      <div class="summary" id="summary"></div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Agent steps</h2>
+    <div id="steps" class="empty">No run yet.</div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  Object.entries(attrs).forEach(([key, value]) => {
+    if (key === "class") node.className = value; else node.setAttribute(key, value);
+  });
+  children.forEach((child) => node.append(child));
+  return node;
+}
+
+function setStatus(status) {
+  const badge = $("status");
+  badge.textContent = status.replace("_", " ");
+  badge.className = "status " + status;
+}
+
+function renderPlan(plan) {
+  const list = el("ol", { class: "plan" });
+  plan.forEach((step) => list.append(el("li", {}, step)));
+  $("plan").replaceChildren(list);
+  $("plan").classList.remove("empty");
+}
+
+function describeInput(input) {
+  return input.path || input.command || input.target || "";
+}
+
+function renderStep(step) {
+  if ($("steps").classList.contains("empty")) {
+    $("steps").replaceChildren();
+    $("steps").classList.remove("empty");
+  }
+  const tokens = step.tokens.input_tokens + step.tokens.output_tokens +
+                 step.tokens.cache_read_tokens + step.tokens.cache_write_tokens;
+  const node = el("div", { class: "step" },
+    el("div", { class: "step-head" },
+      el("span", {}, `Step ${step.step}`),
+      el("span", {}, `${tokens.toLocaleString()} tokens, $${step.cost_so_far_usd.toFixed(4)} so far`)));
+  if (step.thought) node.append(el("div", { class: "thought" }, step.thought));
+  step.tool_calls.forEach((call) => {
+    const details = el("details", { class: "call" + (call.is_error ? " err" : "") },
+      el("summary", {}, `${call.tool}(${describeInput(call.input)})`),
+      el("pre", {}, JSON.stringify(call.input, null, 2)),
+      el("pre", {}, call.result));
+    node.append(details);
+  });
+  $("steps").append(node);
+  $("stat-steps").textContent = step.step;
+  $("stat-cost").textContent = "$" + step.cost_so_far_usd.toFixed(4);
+}
+
+function showPullRequest(url) {
+  $("pr").replaceChildren("Pull request: ", el("a", { href: url, target: "_blank", rel: "noopener" }, url));
+}
+
+function finish(outcome) {
+  setStatus(outcome.status);
+  $("stat-cost").textContent = "$" + outcome.cost_usd.toFixed(4);
+  $("stat-steps").textContent = outcome.steps;
+  $("stat-tests").textContent =
+    outcome.tests_passed === null ? "not run" : outcome.tests_passed ? "passing" : "failing";
+  $("summary").textContent = outcome.summary;
+  if (outcome.pr_url) showPullRequest(outcome.pr_url);
+}
+
+function handle(event, source) {
+  const data = event.data;
+  if (event.type === "plan") renderPlan(data.plan);
+  else if (event.type === "step") renderStep(data);
+  else if (event.type === "update" && data.pr_url) showPullRequest(data.pr_url);
+  else if (event.type === "finished") { setStatus(data.status); $("summary").textContent = data.summary || ""; }
+  else if (event.type === "done") { finish(data); source.close(); $("start").disabled = false; }
+  else if (event.type === "error") {
+    setStatus("error"); $("summary").textContent = data.message;
+    source.close(); $("start").disabled = false;
+  }
+}
+
+$("run-form").addEventListener("submit", async (submitEvent) => {
+  submitEvent.preventDefault();
+  $("start").disabled = true;
+  $("steps").replaceChildren("Planning...");
+  $("steps").classList.add("empty");
+  $("plan").replaceChildren("Planning...");
+  $("pr").replaceChildren();
+  $("summary").textContent = "";
+  $("stat-steps").textContent = "0";
+  $("stat-cost").textContent = "$0.00";
+  $("stat-tests").textContent = "-";
+  $("result-panel").hidden = false;
+  setStatus("running");
+
+  const body = {
+    task: $("task").value,
+    repo: $("repo").value.trim() || null,
+    open_pr: $("open-pr").checked,
+  };
+  const response = await fetch("/api/runs", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    setStatus("error");
+    $("summary").textContent = await response.text();
+    $("start").disabled = false;
+    return;
+  }
+  const job = await response.json();
+  const source = new EventSource(`/api/runs/${job.id}/events`);
+  source.onmessage = (message) => handle(JSON.parse(message.data), source);
+});
+
+fetch("/api/config").then((r) => r.json()).then((config) => {
+  $("config").textContent =
+    `${config.model} | max ${config.max_steps} steps | budget $${config.max_cost_usd.toFixed(2)}`;
+  if (!config.github_enabled) {
+    $("repo").disabled = true;
+    $("repo").placeholder = "Set GITHUB_TOKEN to enable";
+  }
+});
+</script>
+</body>
+</html>
