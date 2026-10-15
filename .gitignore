@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# DevPilot runtime output
+runs/
+workspace/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
