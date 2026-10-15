@@ -11,6 +11,8 @@ REFUSAL_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITAT
 MALFORMED_REASONS = {"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL"}
 THINKING_LEVELS = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
 
+REQUEST_TIMEOUT_MS = 180_000
+
 # The free tier allows only a few requests per minute, so back off generously on 429s.
 RETRY_OPTIONS = types.HttpRetryOptions(
     attempts=5, initial_delay=10.0, max_delay=60.0, http_status_codes=[429, 500, 503]
@@ -51,7 +53,8 @@ class GeminiProvider:
 
     @classmethod
     def from_key(cls, api_key: str, model: str, effort: str) -> "GeminiProvider":
-        options = types.HttpOptions(retry_options=RETRY_OPTIONS)
+        # Without a timeout a stalled connection blocks the run forever; the SDK value is in ms.
+        options = types.HttpOptions(timeout=REQUEST_TIMEOUT_MS, retry_options=RETRY_OPTIONS)
         return cls(genai.Client(api_key=api_key, http_options=options), model, effort)
 
     def generate(
