@@ -46,7 +46,7 @@ The tool-use loop. It starts a conversation with the system prompt, the task and
 3. Execute every tool call in that turn through `ToolExecutor` and send all results back in one message.
 4. Log the step (thought text, tool calls, trimmed results, tokens, cost so far).
 
-The loop ends when the model calls `finish`, when a limit is hit, or when the model refuses. If the model stops without calling a tool it is nudged once to either continue or call `finish`. If a response was cut off by the output limit, the last tool call is not executed (its arguments may be incomplete) and the model is told to work in smaller pieces.
+The loop ends when the model makes a verified `finish` call, when a limit is hit, or when the model refuses. Verification is enforced in code, not left to the prompt: `finish` is rejected with an error result unless `ToolExecutor.tests_verified()` is true, meaning a full `run_tests` (no target) passed and the workspace's file hashes haven't changed since. After `MAX_UNVERIFIED_FINISHES` (3) rejected calls the run ends with status `unverified`. If the model stops without calling a tool it is nudged once; stopping again ends the run as `stopped`. Only a verified `finish` produces `finished`. If a response was cut off by the output limit, the last tool call is not executed (its arguments may be incomplete) and the model is told to work in smaller pieces.
 
 ### `tools.py`
 The seven tools the model can call and their JSON schemas: `list_files`, `read_file`, `write_file`, `edit_file`, `run_command`, `run_tests` and `finish`.
@@ -54,13 +54,14 @@ The seven tools the model can call and their JSON schemas: `list_files`, `read_f
 - File tools work directly on the host workspace folder. Every path goes through `resolve()`, which rejects anything outside the workspace (including `..` tricks and absolute paths) and the `.git` directory.
 - `edit_file` is search and replace. The old text must match exactly once; zero or multiple matches return an error that tells the model what to do instead.
 - `run_command` and `run_tests` never run on the host. They check the command against the blocklist and then run it in the sandbox.
+- After a full, passing `run_tests`, the executor stores a hash of every workspace file. `tests_verified()` compares it with the current state, so any later change, through a file tool or a shell command, makes the agent run the tests again before it can finish.
 - Long outputs are trimmed in the middle, keeping the start and the end, because test failures usually show up at the end.
 
 ### `safety.py`
 A regex blocklist of commands the agent should never try: recursive deletes outside the workspace, `sudo`, `mkfs`, raw device writes, fork bombs, piping downloads into a shell, reverse shells, `docker`, `mount`, `git push` and shutdown commands. It is a second line of defence; the container is the real boundary.
 
 ### `sandbox.py`
-Runs commands in a Docker container started from `python:3.12-slim` (with pytest preinstalled in a derived image built once and cached). The container is locked down:
+Runs commands in a Docker container started from `python:3.12-slim`, pinned by its multi-architecture digest, with a pinned pytest preinstalled in a derived image that is built once and cached. The image tag includes the base image and pytest version, so changing either builds a fresh image. The container is locked down:
 
 - only the workspace is mounted, at `/workspace`
 - no network by default (`network_mode="none"`)
@@ -70,6 +71,8 @@ Runs commands in a Docker container started from `python:3.12-slim` (with pytest
 - every command wrapped in coreutils `timeout`, which kills it after the configured number of seconds
 
 The container lives for one run and is removed afterwards.
+
+Before it starts, `install_dependencies` looks for `requirements.txt`, `requirements-dev.txt` and similar files, and for `[project].dependencies` plus test/dev extras and dependency groups in `pyproject.toml`. The project itself is not installed, so tests import the code being edited. If anything is found, a short-lived setup container with the same hardening, network access and the workspace mounted read-only creates a virtualenv in a host temp directory and pip-installs them. The run container mounts that virtualenv read-only and puts it first on `PATH`, and stays offline. An install that fails or times out doesn't stop the run: the agent is told what failed, and the report is saved in the run log.
 
 ### `github_client.py`
 Two classes:
@@ -81,7 +84,7 @@ Two classes:
 Ties everything together.
 
 - `run_task` solves a task in a local folder: create the run log, start the sandbox, plan, run the agent, record the outcome.
-- `run_on_github` covers task and issue modes on a GitHub repository: load the issue (if any), clone into `workspace/`, create a `devpilot/...` branch, solve, then commit, push and open a pull request whose body has the summary, plan, diff stat and test status. No PR is opened if the agent didn't finish or didn't change anything.
+- `run_on_github` covers task and issue modes on a GitHub repository: load the issue (if any), clone into `workspace/`, create a `devpilot/...` branch, solve, then commit, push and open a pull request whose body has the summary, plan, diff stat and test status. `pr_block_reason` checks the outcome again before publishing, independently of the agent: no PR is opened unless the status is `finished` and the tests passed on the final code. The reason is recorded in `RunOutcome.pr_skipped` and the run log. No PR is opened either if nothing changed.
 
 ### `runlog.py`
 `RunLog` writes `runs/<run_id>.json` after every change (atomically, through a temp file), so a crash never loses earlier steps. It also forwards each change as an event to listeners; the CLI prints them and the web UI streams them to the browser.
@@ -92,8 +95,10 @@ Ties everything together.
 ### `web/`
 A FastAPI app with a single static page. `POST /api/runs` starts a run on a background thread and returns a job id; `GET /api/runs/{id}/events` streams the run's events with Server-Sent Events until it is done. The page renders the plan, each agent step with expandable tool inputs and outputs, running cost, and the final summary and PR link.
 
+Access control: `TrustedHostMiddleware` only accepts `localhost`/`127.0.0.1` Host headers by default, which stops DNS rebinding. With `DEVPILOT_WEB_TOKEN` set, every `/api` route needs `Authorization: Bearer <token>`; the page reads the event stream with `fetch` so it can send that header. `serve()` refuses non-loopback bind addresses without a token. `JobManager` caps concurrent runs and runs started per hour (HTTP 429) and forgets old finished jobs, and an optional repository allowlist rejects other repos (HTTP 403).
+
 ### `benchmarks/`
-Eight small tasks, each with `task.md` (the prompt), `repo/` (starting code with a few visible tests) and `hidden/` (grading tests). `run_benchmark.py` copies each repo into a fresh workspace, runs the agent, then copies the hidden tests in and runs them in the sandbox. A task counts as solved only if the hidden tests pass, so the agent can't game the result by editing its own tests.
+Eight small tasks, each with `task.md` (the prompt), `repo/` (starting code with a few visible tests) and `hidden/` (grading tests). `run_benchmark.py` copies each repo into a fresh workspace, runs the agent, then copies the hidden tests in and runs them in the sandbox. A task counts as solved only if the hidden tests pass, so the agent can't game the result by editing its own tests. `--repeats N` runs each task several times for a success rate. Each task's untouched starting code is graded too, as a no-agent baseline. Results record the provider, model, sandbox image digest, pytest version and DevPilot commit.
 
 ## Testing
 

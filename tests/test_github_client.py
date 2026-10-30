@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from github.GithubException import GithubException
 
+from devpilot.agent import MAX_UNVERIFIED_FINISHES
 from devpilot.config import Settings
 from devpilot.github_client import (
     GitHubClient,
@@ -16,9 +17,9 @@ from devpilot.github_client import (
     _auth_env,
     validate_repo_name,
 )
-from devpilot.pipeline import issue_to_task, pr_title, run_on_github
+from devpilot.pipeline import RunOutcome, issue_to_task, pr_block_reason, pr_title, run_on_github
 from tests.conftest import FakeSandbox
-from tests.fakes import claude_provider, plan_response, response, tool_use
+from tests.fakes import claude_provider, plan_response, response, tool_use, verified_finish
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -149,7 +150,7 @@ def test_issue_mode_end_to_end_opens_pr(tmp_path, remote):
         [
             plan_response("Fix add in calc.py", "Run tests"),
             response(tool_use("edit_file", path="calc.py", old_text="a - b", new_text="a + b")),
-            response(tool_use("finish", summary="add() now returns the sum.")),
+            verified_finish("add() now returns the sum."),
         ]
     )
     settings = Settings(
@@ -176,15 +177,53 @@ def test_issue_mode_end_to_end_opens_pr(tmp_path, remote):
     assert kwargs["base"] == "main"
     assert "Closes #5" in kwargs["body"]
     assert "calc.py" in kwargs["body"]
+    assert "**passing**" in kwargs["body"]
     assert outcome.branch in git("branch", "--list", "devpilot/*", cwd=remote)
+
+
+def test_no_pr_when_agent_skips_the_tests(tmp_path, remote):
+    github = MagicMock(spec=GitHubClient)
+    github.clone.side_effect = lambda name, dest: GitRepo.clone(str(remote), dest)
+    edit = response(tool_use("edit_file", path="calc.py", old_text="a - b", new_text="a + b"))
+    untested_finish = response(tool_use("finish", summary="Trust me."))
+    provider, _ = claude_provider(
+        [plan_response("Fix add"), edit] + [untested_finish] * MAX_UNVERIFIED_FINISHES
+    )
+    settings = Settings(
+        anthropic_api_key="k", github_token="t", runs_dir=tmp_path / "r", workspace_dir=tmp_path
+    )
+
+    outcome = run_on_github(
+        "o/r", settings, task="fix add", provider=provider, github=github,
+        sandbox_factory=fake_sandbox_factory,
+    )  # fmt: skip
+
+    assert outcome.status == "unverified"
+    assert outcome.pr_url is None
+    assert outcome.pr_skipped == "No pull request opened: the run ended with status 'unverified'."
+    github.create_pull_request.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("status", "tests_passed", "blocked"),
+    [
+        ("finished", True, False),
+        ("finished", None, True),
+        ("finished", False, True),
+        ("unverified", False, True),
+        ("stopped", True, True),
+    ],
+)
+def test_pr_publishing_enforces_verification_itself(status, tests_passed, blocked):
+    outcome = RunOutcome("id", status, "s", [], 1, 0.0, tests_passed, "log", "ws")
+
+    assert (pr_block_reason(outcome) is not None) is blocked
 
 
 def test_no_pr_when_nothing_changed(tmp_path, remote):
     github = MagicMock(spec=GitHubClient)
     github.clone.side_effect = lambda name, dest: GitRepo.clone(str(remote), dest)
-    provider, _ = claude_provider(
-        [plan_response("Look around"), response(tool_use("finish", summary="Nothing to do."))]
-    )
+    provider, _ = claude_provider([plan_response("Look around"), verified_finish("Nothing to do.")])
     settings = Settings(
         anthropic_api_key="k", github_token="t", runs_dir=tmp_path / "r", workspace_dir=tmp_path
     )

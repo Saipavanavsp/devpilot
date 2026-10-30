@@ -32,6 +32,11 @@ def response(*content: SimpleNamespace, stop_reason: str | None = None) -> Simpl
     return SimpleNamespace(content=list(content), stop_reason=stop_reason, usage=usage())
 
 
+def verified_finish(summary: str = "done") -> SimpleNamespace:
+    """A turn that runs the full test suite and then finishes, which the agent accepts."""
+    return response(tool_use("run_tests"), tool_use("finish", summary=summary))
+
+
 def plan_response(*steps: str) -> SimpleNamespace:
     return response(text(json.dumps({"steps": list(steps)})))
 

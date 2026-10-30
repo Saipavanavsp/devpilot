@@ -14,7 +14,11 @@ If you fork the project, keep your keys in `.env` or your CI provider's secret s
 
 ## Agent sandbox
 
-Code written by the model runs only inside a Docker container with no network, a read-only root filesystem, dropped capabilities, resource limits and a per-command timeout. See the safety design section of the [README](README.md#safety-design).
+Code written by the model runs only inside a Docker container with no network, a read-only root filesystem, dropped capabilities, resource limits and a per-command timeout. Repository dependencies are installed beforehand by a separate setup container, which is the only step with network access. Note that this runs the target repository's own install-time code (for example package build scripts); disable it with `DEVPILOT_SANDBOX_INSTALL_DEPS=false` for repositories you don't trust. See the safety design section of the [README](README.md#safety-design).
+
+## Web UI
+
+`devpilot web` starts runs that spend model credits and execute code, so it is local-only by default: it binds to 127.0.0.1 and rejects requests with any Host header other than `localhost`/`127.0.0.1`, which protects against DNS rebinding. It refuses to bind to any other address unless `DEVPILOT_WEB_TOKEN` is set, and then every API call needs that token. If you expose it, also set `DEVPILOT_WEB_ALLOWED_REPOS`, and put it behind HTTPS (for example a reverse proxy), since the token is sent as a bearer header.
 
 ## Reporting a vulnerability
 

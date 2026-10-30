@@ -7,7 +7,7 @@
 
 DevPilot is an autonomous coding agent. Give it a task or a GitHub issue and it writes a plan, reads and edits the code, runs the tests inside a locked-down Docker container, fixes what fails, and opens a pull request.
 
-It is written from scratch in Python on top of the Claude Messages API with tool use, with Google Gemini as an alternative provider. It's inspired by OpenHands and Devin, but it's deliberately small: about 1,500 lines of Python you can read in one sitting.
+It is written from scratch in Python on top of the Claude Messages API with tool use, with Google Gemini as an alternative provider. It's inspired by OpenHands and Devin, but it's deliberately small: under 2,000 lines of Python you can read in one sitting.
 
 **Author:** Sai Pavan  
 **Live example:** [pull request opened by DevPilot](https://github.com/Saipavanavsp/devpilot-demo/pull/2) for [this issue](https://github.com/Saipavanavsp/devpilot-demo/issues/1)
@@ -48,12 +48,14 @@ It is written from scratch in Python on top of the Claude Messages API with tool
 
 - **Planner**: the model first turns the task into a short numbered plan (schema-constrained JSON), which is saved in the run log and shown in the UI.
 - **Tool-use agent loop**: `list_files`, `read_file`, `write_file`, `edit_file` (exact search and replace), `run_command`, `run_tests` and `finish`.
-- **Docker sandbox**: every command runs in a `python:3.12-slim` container with only the workspace mounted, no network, a read-only root filesystem, dropped capabilities, resource limits and a per-command timeout.
+- **Verified completion**: a run only counts as `finished`, and a pull request is only opened, if the full test suite passed on the final code. This is enforced in code, twice: the agent rejects `finish` until a full `run_tests` has passed since the last change, and the pipeline independently refuses to publish anything else.
+- **Docker sandbox**: every command runs in a pinned `python:3.12-slim` container (by digest, with pytest pinned too) with only the workspace mounted, no network, a read-only root filesystem, dropped capabilities, resource limits and a per-command timeout.
+- **Repository dependencies**: dependencies declared in `requirements*.txt` or `pyproject.toml` are installed into a virtualenv by a separate setup container, the only step with network access, before the agent starts.
 - **Safety limits**: maximum steps, maximum estimated cost and tokens per run, command timeout, a blocklist of dangerous commands, and path checks that keep file tools inside the workspace.
 - **GitHub integration**: clone a repository, work on a new branch, commit, push and open a pull request with a summary, the plan, the diff stat and the test result. Issue mode reads an issue and solves it.
 - **Interfaces**: a CLI (`devpilot run`, `devpilot issue`, `devpilot web`) and a web UI that streams the plan and each agent step live.
 - **Run logs**: every step (thought, tool calls, trimmed results, tokens, cost so far) is written to `runs/<run_id>.json`.
-- **Benchmark**: eight small coding tasks graded by hidden tests, plus a script that reports solved count, steps and estimated cost.
+- **Benchmark**: eight small coding tasks graded by hidden tests, plus a script that runs each task several times and reports success rate, average steps and cost, a no-agent baseline and the exact environment used.
 - **Two model providers**: Claude (default, `claude-sonnet-5-5`) and Gemini (`gemini-3.6-flash`), selected with `DEVPILOT_PROVIDER`.
 
 ## Architecture
@@ -87,7 +89,8 @@ More detail on every module is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 3. **Plan.** The planner sends the task and the file list to the model and gets back 3 to 7 steps as JSON.
 4. **Loop.** The agent sends the task, the plan and the tool definitions to the model. The model replies with tool calls; DevPilot runs them and sends the results back. This repeats: read code, edit, run the tests in Docker, read the failures, fix, run again.
 5. **Limits.** Before every model call the agent checks the step count, the estimated cost and the token total. Commands are checked against the blocklist and killed after the timeout.
-6. **Finish.** When the tests pass, the model calls `finish` with a summary. In GitHub mode DevPilot then commits, pushes the branch and opens a pull request that links the issue.
+6. **Finish.** The model calls `finish` with a summary. DevPilot accepts it only if a full `run_tests` passed after the last change to the workspace (checked by hashing the files); otherwise the call is rejected and the model is told to run the tests. After three rejected calls the run ends as `unverified`. A model that stops without calling `finish` ends as `stopped`, never `finished`.
+7. **Pull request.** In GitHub mode, a `finished` run with verified tests is committed, pushed and opened as a pull request that links the issue. Any other outcome keeps the changes in the local workspace and says why no PR was opened.
 
 Each step is written to the run log as it happens and streamed to the web UI.
 
@@ -119,7 +122,7 @@ Requirements: Windows 10/11 with WSL 2 and Ubuntu, Docker Desktop, Python 3.12, 
 
 On native Windows (PowerShell) the same steps work with `py -3.12 -m venv .venv` and `.venv\Scripts\activate`.
 
-The first run builds a small sandbox image (`python:3.12-slim` plus pytest), which takes about a minute.
+The first run builds a small sandbox image (`python:3.12-slim` pinned by digest, plus a pinned pytest), which takes about a minute.
 
 ## Usage
 
@@ -136,12 +139,14 @@ devpilot issue owner/name 12
 # Start the web UI at http://127.0.0.1:8000 (shows the plan and live agent steps)
 devpilot web
 
-# Run the benchmark (all tasks, or a subset by prefix)
+# Run the benchmark (all tasks, or a subset by prefix; --repeats for several attempts each)
 python benchmarks/run_benchmark.py
-python benchmarks/run_benchmark.py --tasks 01 04
+python benchmarks/run_benchmark.py --tasks 01 04 --repeats 3
 ```
 
-Settings come from `.env` (see `.env.example`): `DEVPILOT_MODEL`, `DEVPILOT_MAX_STEPS`, `DEVPILOT_MAX_COST_USD`, `DEVPILOT_MAX_TOKENS`, `DEVPILOT_COMMAND_TIMEOUT`, `DEVPILOT_SANDBOX_NETWORK` and more.
+Settings come from `.env` (see `.env.example`): `DEVPILOT_MODEL`, `DEVPILOT_MAX_STEPS`, `DEVPILOT_MAX_COST_USD`, `DEVPILOT_MAX_TOKENS`, `DEVPILOT_COMMAND_TIMEOUT`, `DEVPILOT_SANDBOX_NETWORK`, `DEVPILOT_SANDBOX_INSTALL_DEPS` and more.
+
+**Web UI access.** `devpilot web` listens on 127.0.0.1 and only accepts requests addressed to `localhost`/`127.0.0.1`, which blocks DNS-rebinding attacks from other web pages. To reach it from another machine, set `DEVPILOT_WEB_TOKEN` (at least 16 characters; the page asks for it) and run `devpilot web --host <name or 0.0.0.0>`; DevPilot refuses to listen on a non-local address without a token. `DEVPILOT_WEB_ALLOWED_REPOS` limits which repositories the UI can work on, and at most `DEVPILOT_WEB_MAX_JOBS` runs (default 2) can run at once and `DEVPILOT_WEB_RUNS_PER_HOUR` (default 20) can start per hour.
 
 ## Benchmark results
 
@@ -155,7 +160,7 @@ Real runs inside the Docker sandbox, graded by the hidden tests (from [benchmark
 
 Each task starts from a stub or buggy module with a couple of visible tests. A task is solved only if a separate hidden test suite, copied in after the agent finishes, passes in the sandbox. Every hidden suite was checked against a reference solution: it fails on the starting code and passes on a correct one.
 
-These runs used the Gemini free tier, which allows only 20 requests per model per day, so only 2 of the 8 tasks have been run so far; the other six are ready to run with `python benchmarks/run_benchmark.py`. Costs are estimates from token counts and each model's paid list price; the free-tier runs themselves cost nothing. The Claude provider is covered by the unit tests with a mocked API but has not yet been benchmarked live.
+**These numbers are a smoke test, not a performance claim.** They are two single attempts on two different models, run on the Gemini free tier (20 requests per model per day), before verified completion was enforced. The other six tasks, repeated attempts and the Claude provider have not been run live yet. The benchmark script is ready for that: `--repeats N` gives a per-task success rate, it reports average steps and cost, the number of hidden tests per task as a rough measure of complexity, and a baseline that grades the untouched starting code (what you get without the agent), and it records the model, sandbox image digest, pytest version and DevPilot commit used. Costs are estimates from token counts and each model's paid list price.
 
 **Live GitHub test.** `devpilot issue Saipavanavsp/devpilot-demo 1` (on `gemini-3.1-flash-lite`) read [issue #1](https://github.com/Saipavanavsp/devpilot-demo/issues/1), reproduced the bug with a test, fixed `Inventory.remove()`, added four tests and opened [pull request #2](https://github.com/Saipavanavsp/devpilot-demo/pull/2) in 13 steps (estimated $0.01).
 
@@ -165,7 +170,10 @@ Agents that run code need guardrails. DevPilot layers them:
 
 | Layer | What it does |
 |---|---|
-| Docker sandbox | Commands run in a throwaway container: only the workspace is mounted, no network by default, read-only root filesystem, all capabilities dropped, `no-new-privileges`, non-root user, 1 GB memory, 2 CPUs, 256 processes. |
+| Verified completion | `finish` is rejected unless the full test suite passed on the current code; the pipeline separately refuses to open a PR for anything but a verified `finished` run. |
+| Docker sandbox | Commands run in a throwaway container: only the workspace is mounted, no network by default, read-only root filesystem, all capabilities dropped, `no-new-privileges`, non-root user, 1 GB memory, 2 CPUs, 256 processes. The base image is pinned by digest and pytest by version. |
+| Dependency setup | Repository dependencies are installed by a separate, equally locked-down setup container that sees the workspace read-only. It is the only step with network access; the virtualenv is mounted read-only into the offline run container. Turn it off with `DEVPILOT_SANDBOX_INSTALL_DEPS=false`. |
+| Web UI | Local-only by default with a Host-header check; a token is required for any other bind address. Repository allowlist, concurrency and hourly run limits. |
 | Command timeout | Every command is wrapped in `timeout`, so a hanging test or infinite loop is killed (default 120 s). |
 | Command blocklist | Rejects `sudo`, `rm -rf /`, `mkfs`, raw device writes, fork bombs, `curl | sh`, reverse shells, `docker`, `mount`, `git push` and similar before they reach the container. |
 | Path checks | File tools resolve every path and refuse anything outside the workspace and anything in `.git`. |
@@ -203,9 +211,9 @@ Keys live only in a local, gitignored `.env`; CI scans every push with gitleaks,
 
 - Stream model output token by token in the web UI, not just step by step.
 - Repository map (symbols and call graph) so the agent finds code faster in large repos.
-- Per-repo sandbox images that install the project's dependencies, with network on only during setup.
+- Lockfile-aware setup (`uv.lock`, `poetry.lock`) and caching installed dependencies between runs.
 - Letting the agent read CI results from the pull request and push follow-up fixes.
-- A larger benchmark (for example a SWE-bench Lite subset) with repeated runs to measure variance.
+- Run the full benchmark with repeated attempts on both providers, then a larger one (for example a SWE-bench Lite subset).
 - Context management for long runs: summarise or clear old tool results.
 
 ## License

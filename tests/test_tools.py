@@ -119,6 +119,40 @@ def test_pytest_via_run_command_also_tracks_outcome(executor, fake_sandbox):
     assert executor.last_tests_passed is True
 
 
+def test_full_passing_run_verifies_until_the_workspace_changes(executor, tmp_path):
+    assert not executor.tests_verified()
+    assert executor.tests_passed is None
+
+    executor.execute("run_tests", {})
+    assert executor.tests_verified()
+    assert executor.tests_passed is True
+
+    # Same size as the original, so only a content check notices it.
+    executor.execute("edit_file", {"path": "src/app.py", "old_text": "a - b", "new_text": "a + b"})
+    assert not executor.tests_verified()
+    assert executor.tests_passed is None
+
+
+def test_changes_through_commands_also_invalidate(executor, tmp_path):
+    executor.execute("run_tests", {})
+    (tmp_path / "src" / "new.py").write_text("x = 1\n")  # e.g. written by run_command
+
+    assert not executor.tests_verified()
+
+
+def test_partial_or_failing_runs_do_not_verify(executor, fake_sandbox):
+    executor.execute("run_tests", {"target": "tests/test_app.py"})
+    executor.execute("run_command", {"command": "python -m pytest"})
+    assert executor.last_tests_passed is True
+    assert not executor.tests_verified()
+
+    executor.execute("run_tests", {})
+    fake_sandbox.results.append(CommandResult(exit_code=1, output="1 failed"))
+    executor.execute("run_tests", {})
+    assert not executor.tests_verified()
+    assert executor.tests_passed is False
+
+
 def test_finish_returns_summary(executor):
     result = executor.execute("finish", {"summary": "Fixed add()"})
 

@@ -44,7 +44,7 @@
             font-weight: 600; border: 1px solid currentColor; }
   .status.running { color: var(--accent); } .status.finished { color: var(--ok); }
   .status.error, .status.refused { color: var(--err); }
-  .status.max_steps, .status.budget_exceeded { color: var(--warn); }
+  .status.max_steps, .status.budget_exceeded, .status.unverified, .status.stopped { color: var(--warn); }
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
   .stat { background: var(--bg); border-radius: 6px; padding: 8px; }
   .stat b { display: block; font-size: 16px; }
@@ -112,9 +112,44 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+const TOKEN_KEY = "devpilot-token";
+
+// Calls the API with the access token, if the server needs one, asking for it on a 401.
+async function api(path, options = {}) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = sessionStorage.getItem(TOKEN_KEY);
+    const headers = { ...(options.headers || {}) };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(path, { ...options, headers });
+    if (response.status !== 401 || attempt === 1) return response;
+    const entered = window.prompt("This DevPilot server needs an access token (DEVPILOT_WEB_TOKEN):");
+    if (!entered) return response;
+    sessionStorage.setItem(TOKEN_KEY, entered.trim());
+  }
+}
+
+// Reads a Server-Sent Events stream with fetch, since EventSource can't send headers.
+async function streamEvents(jobId, onEvent) {
+  const response = await api(`/api/runs/${jobId}/events`);
+  if (!response.ok) throw new Error(await response.text());
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += value;
+    let end;
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      const chunk = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      if (chunk.startsWith("data: ")) onEvent(JSON.parse(chunk.slice(6)));
+    }
+  }
+}
+
 function setStatus(status) {
   const badge = $("status");
-  badge.textContent = status.replace("_", " ");
+  badge.textContent = status.replaceAll("_", " ");
   badge.className = "status " + status;
 }
 
@@ -165,18 +200,19 @@ function finish(outcome) {
     outcome.tests_passed === null ? "not run" : outcome.tests_passed ? "passing" : "failing";
   $("summary").textContent = outcome.summary;
   if (outcome.pr_url) showPullRequest(outcome.pr_url);
+  else if (outcome.pr_skipped) $("pr").textContent = outcome.pr_skipped;
 }
 
-function handle(event, source) {
+function handle(event) {
   const data = event.data;
   if (event.type === "plan") renderPlan(data.plan);
   else if (event.type === "step") renderStep(data);
   else if (event.type === "update" && data.pr_url) showPullRequest(data.pr_url);
   else if (event.type === "finished") { setStatus(data.status); $("summary").textContent = data.summary || ""; }
-  else if (event.type === "done") { finish(data); source.close(); $("start").disabled = false; }
+  else if (event.type === "done") { finish(data); $("start").disabled = false; }
   else if (event.type === "error") {
     setStatus("error"); $("summary").textContent = data.message;
-    source.close(); $("start").disabled = false;
+    $("start").disabled = false;
   }
 }
 
@@ -199,7 +235,7 @@ $("run-form").addEventListener("submit", async (submitEvent) => {
     repo: $("repo").value.trim() || null,
     open_pr: $("open-pr").checked,
   };
-  const response = await fetch("/api/runs", {
+  const response = await api("/api/runs", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   if (!response.ok) {
@@ -209,11 +245,16 @@ $("run-form").addEventListener("submit", async (submitEvent) => {
     return;
   }
   const job = await response.json();
-  const source = new EventSource(`/api/runs/${job.id}/events`);
-  source.onmessage = (message) => handle(JSON.parse(message.data), source);
+  try {
+    await streamEvents(job.id, handle);
+  } catch (error) {
+    setStatus("error");
+    $("summary").textContent = String(error);
+    $("start").disabled = false;
+  }
 });
 
-fetch("/api/config").then((r) => r.json()).then((config) => {
+api("/api/config").then((r) => r.json()).then((config) => {
   $("config").textContent =
     `${config.model} | max ${config.max_steps} steps | budget $${config.max_cost_usd.toFixed(2)}`;
   if (!config.github_enabled) {

@@ -12,6 +12,10 @@ ENV_VARS = [
     "DEVPILOT_MAX_STEPS",
     "DEVPILOT_MAX_COST_USD",
     "DEVPILOT_SANDBOX_NETWORK",
+    "DEVPILOT_SANDBOX_IMAGE",
+    "DEVPILOT_SANDBOX_INSTALL_DEPS",
+    "DEVPILOT_WEB_TOKEN",
+    "DEVPILOT_WEB_ALLOWED_REPOS",
 ]
 
 
@@ -29,6 +33,19 @@ def test_defaults_without_env_file(tmp_path):
     assert settings.anthropic_api_key is None
     assert settings.max_steps == 40
     assert settings.sandbox_network is False
+    assert settings.sandbox_install_deps is True
+    assert "@sha256:" in settings.sandbox_image  # pinned by digest
+    assert settings.web_token is None
+
+
+def test_web_settings_from_env(monkeypatch):
+    monkeypatch.setenv("DEVPILOT_WEB_TOKEN", "a-long-secret-token")
+    monkeypatch.setenv("DEVPILOT_WEB_ALLOWED_REPOS", "octo/one, octo/two,")
+
+    settings = load_settings(None)
+
+    assert settings.web_token == "a-long-secret-token"
+    assert settings.web_allowed_repos == ("octo/one", "octo/two")
 
 
 def test_reads_values_from_env_file(tmp_path):

@@ -3,13 +3,20 @@ from dataclasses import replace
 
 import pytest
 
-from devpilot.agent import NUDGE, Agent
+from devpilot.agent import MAX_UNVERIFIED_FINISHES, NOT_VERIFIED, NUDGE, Agent
 from devpilot.config import Settings
 from devpilot.planner import PlanningError, make_plan
 from devpilot.runlog import RunLog
 from devpilot.sandbox import CommandResult
 from devpilot.tools import ToolExecutor
-from tests.fakes import claude_provider, plan_response, response, text, tool_use
+from tests.fakes import (
+    claude_provider,
+    plan_response,
+    response,
+    text,
+    tool_use,
+    verified_finish,
+)
 
 
 @pytest.fixture
@@ -68,7 +75,7 @@ def test_agent_edits_tests_and_finishes(settings, workspace, fake_sandbox):
 def test_tool_results_are_sent_back_with_matching_ids(settings, workspace, fake_sandbox):
     first = tool_use("list_files")
     agent, client, _ = make_agent(
-        [response(first), response(tool_use("finish", summary="done"))],
+        [response(first), verified_finish()],
         settings,
         workspace,
         fake_sandbox,
@@ -83,9 +90,7 @@ def test_tool_results_are_sent_back_with_matching_ids(settings, workspace, fake_
 
 
 def test_claude_request_uses_model_fallbacks_and_caching(settings, workspace, fake_sandbox):
-    agent, client, _ = make_agent(
-        [response(tool_use("finish", summary="done"))], settings, workspace, fake_sandbox
-    )
+    agent, client, _ = make_agent([verified_finish()], settings, workspace, fake_sandbox)
 
     agent.run("task", ["step"])
 
@@ -127,7 +132,7 @@ def test_agent_stops_when_budget_is_spent(settings, workspace, fake_sandbox):
     assert len(client.calls) == 1
 
 
-def test_agent_nudges_once_then_accepts_text_answer(settings, workspace, fake_sandbox):
+def test_text_answer_after_nudge_is_not_a_success(settings, workspace, fake_sandbox):
     agent, client, _ = make_agent(
         [response(text("I think it's done.")), response(text("All done."))],
         settings,
@@ -138,15 +143,89 @@ def test_agent_nudges_once_then_accepts_text_answer(settings, workspace, fake_sa
     result = agent.run("task", ["step"])
 
     assert client.calls[1]["messages"][-1] == {"role": "user", "content": NUDGE}
-    assert result.status == "finished"
+    assert result.status == "stopped"
     assert result.summary == "All done."
+
+
+def test_finish_is_rejected_until_tests_pass(settings, workspace, fake_sandbox):
+    agent, client, _ = make_agent(
+        [
+            response(tool_use("edit_file", path="calc.py", old_text="a - b", new_text="a + b")),
+            response(tool_use("finish", summary="skipped the tests")),
+            verified_finish("Fixed add."),
+        ],
+        settings,
+        workspace,
+        fake_sandbox,
+    )
+
+    result = agent.run("fix add", ["step"])
+
+    rejection = client.calls[2]["messages"][-1]["content"][0]
+    assert rejection["is_error"] is True
+    assert rejection["content"] == NOT_VERIFIED
+    assert result.status == "finished"
+    assert result.summary == "Fixed add."
+    assert result.tests_passed is True
+
+
+def test_change_after_passing_tests_needs_a_new_test_run(settings, workspace, fake_sandbox):
+    agent, client, _ = make_agent(
+        [
+            response(tool_use("run_tests")),
+            response(tool_use("edit_file", path="calc.py", old_text="a - b", new_text="a * b")),
+            response(tool_use("finish", summary="done")),
+            verified_finish(),
+        ],
+        settings,
+        workspace,
+        fake_sandbox,
+    )
+
+    result = agent.run("task", ["step"])
+
+    assert client.calls[3]["messages"][-1]["content"][0]["content"] == NOT_VERIFIED
+    assert result.status == "finished"
+
+
+def test_targeted_test_run_does_not_verify(settings, workspace, fake_sandbox):
+    agent, client, _ = make_agent(
+        [
+            response(tool_use("run_tests", target="tests/test_calc.py")),
+            response(tool_use("finish", summary="done")),
+            verified_finish(),
+        ],
+        settings,
+        workspace,
+        fake_sandbox,
+    )
+
+    assert agent.run("task", ["step"]).status == "finished"
+    assert client.calls[2]["messages"][-1]["content"][0]["content"] == NOT_VERIFIED
+
+
+def test_failing_tests_end_the_run_as_unverified(settings, workspace, fake_sandbox):
+    fake_sandbox.results.extend(
+        CommandResult(exit_code=1, output="1 failed") for _ in range(MAX_UNVERIFIED_FINISHES)
+    )
+    failing_finish = response(tool_use("run_tests"), tool_use("finish", summary="Can't fix it."))
+    agent, client, _ = make_agent(
+        [failing_finish] * MAX_UNVERIFIED_FINISHES, settings, workspace, fake_sandbox
+    )
+
+    result = agent.run("task", ["step"])
+
+    assert result.status == "unverified"
+    assert result.summary == "Can't fix it."
+    assert result.tests_passed is False
+    assert len(client.calls) == MAX_UNVERIFIED_FINISHES
 
 
 def test_truncated_tool_call_is_not_executed(settings, workspace, fake_sandbox):
     agent, client, _ = make_agent(
         [
             response(tool_use("write_file", path="big.py", content="x"), stop_reason="max_tokens"),
-            response(tool_use("finish", summary="done")),
+            verified_finish(),
         ],
         settings,
         workspace,

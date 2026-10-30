@@ -20,17 +20,25 @@ them all in the same response.
 - Verify your work with run_tests. If tests fail, read the output, fix the cause and rerun them.
 - Add or update tests for behaviour you change when the project has a test suite. Don't weaken \
 or delete existing tests to make them pass.
-- When the work is done and the tests pass, call finish with a short summary of what changed \
-and why. Don't call finish while tests are failing unless you cannot fix them, and then say so \
-in the summary."""
+- When the work is done, run the full suite with run_tests (no target), then call finish with a \
+short summary of what changed and why. finish is rejected unless that full run passed after your \
+last change. If you cannot make the tests pass, call finish again and explain why in the \
+summary; the run is then reported as unverified and no pull request is opened."""
 
 NETWORK_ON = "Network access is available for installing packages."
 NETWORK_OFF = "There is no network access, so you cannot install packages."
 
 NUDGE = (
-    "You stopped without calling a tool. If the task is complete and the tests pass, "
-    "call finish with a summary. Otherwise continue working."
+    "You stopped without calling a tool. If the task is complete, run the full test suite with "
+    "run_tests and call finish with a summary. Otherwise continue working."
 )
+NOT_VERIFIED = (
+    "finish rejected: the full test suite has not passed since your last change. Run run_tests "
+    "without a target, fix any failures, then call finish again. If the tests cannot pass, call "
+    "finish once more and explain why; the run will be reported as unverified."
+)
+# Unverified finish calls allowed before the run ends as "unverified".
+MAX_UNVERIFIED_FINISHES = 3
 MALFORMED = "Your last tool call could not be parsed. Call the tool again with valid arguments."
 TRUNCATED = (
     "Your response was cut off before this tool call was complete. "
@@ -73,6 +81,8 @@ class Agent:
         self.system_prompt = SYSTEM_PROMPT.format(
             network_note=NETWORK_ON if settings.sandbox_network else NETWORK_OFF
         )
+        self._unverified_finishes = 0
+        self._last_finish_summary = ""
 
     @property
     def cost(self) -> float:
@@ -92,6 +102,8 @@ class Agent:
             f"<task>\n{task}\n</task>\n\n<plan>\n{plan_text}\n</plan>",
         )
         nudged = False
+        self._unverified_finishes = 0
+        self._last_finish_summary = ""
 
         for step in range(1, self.settings.max_steps + 1):
             if self._over_budget():
@@ -110,7 +122,8 @@ class Agent:
                     conversation.add_user_message(MALFORMED)
                     continue
                 if nudged:
-                    return self._result("finished", turn.text or "Agent stopped.", step)
+                    # Only a verified finish call counts as success.
+                    return self._result("stopped", turn.text or "Agent stopped.", step)
                 nudged = True
                 conversation.add_user_message(NUDGE)
                 continue
@@ -124,6 +137,9 @@ class Agent:
             )
             if finished is not None:
                 return self._result("finished", finished.content, step)
+            if self._unverified_finishes >= MAX_UNVERIFIED_FINISHES:
+                summary = self._last_finish_summary or "Finished without passing tests."
+                return self._result("unverified", summary, step)
 
         return self._result(
             "max_steps", f"Stopped after {self.settings.max_steps} steps.", self.settings.max_steps
@@ -135,10 +151,21 @@ class Agent:
             if turn.stop == "max_tokens" and call is turn.tool_calls[-1]:
                 # The response hit the output limit, so the last tool input may be cut off.
                 result = ToolResult(TRUNCATED, is_error=True)
+            elif call.name == "finish":
+                result = self._finish(call)
             else:
                 result = self.tools.execute(call.name, call.arguments)
             outputs.append(ToolOutput(call=call, content=result.content, is_error=result.is_error))
         return outputs
+
+    def _finish(self, call: ToolCall) -> ToolResult:
+        """Accept finish only after the full test suite passed on the current code."""
+        result = self.tools.execute(call.name, call.arguments)
+        if result.is_error or self.tools.tests_verified():
+            return result
+        self._unverified_finishes += 1
+        self._last_finish_summary = result.content
+        return ToolResult(NOT_VERIFIED, is_error=True)
 
     def _log_step(self, step: int, turn: ModelTurn, outputs: list[ToolOutput]) -> None:
         self.log.add_step(
@@ -167,5 +194,5 @@ class Agent:
             steps=steps,
             usage=self.usage,
             cost_usd=self.cost,
-            tests_passed=self.tools.last_tests_passed,
+            tests_passed=self.tools.tests_passed,
         )

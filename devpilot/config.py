@@ -4,6 +4,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from devpilot.sandbox import DEFAULT_BASE_IMAGE
+
 PROVIDERS = {"anthropic", "gemini"}
 DEFAULT_MODELS = {"anthropic": "claude-sonnet-5-5", "gemini": "gemini-3.6-flash"}
 API_KEY_VARS = {"anthropic": "ANTHROPIC_API_KEY", "gemini": "GOOGLE_API_KEY"}
@@ -49,10 +51,17 @@ class Settings:
     max_cost_usd: float = 2.0
     max_tokens: int = 1_500_000
     command_timeout: int = 120
-    sandbox_image: str = "python:3.12-slim"
+    sandbox_image: str = DEFAULT_BASE_IMAGE
     sandbox_network: bool = False
+    sandbox_install_deps: bool = True
     runs_dir: Path = Path("runs")
     workspace_dir: Path = Path("workspace")
+    # Web UI access control.
+    web_token: str | None = None
+    web_max_jobs: int = 2
+    web_runs_per_hour: int = 20
+    web_allowed_repos: tuple[str, ...] = ()
+    web_allowed_hosts: tuple[str, ...] = ()
 
     def require_api_key(self) -> str:
         key = self.google_api_key if self.provider == "gemini" else self.anthropic_api_key
@@ -99,6 +108,11 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _list(name: str) -> tuple[str, ...]:
+    raw = os.environ.get(name) or ""
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 def _choice(name: str, default: str, allowed: set[str]) -> str:
     value = (os.environ.get(name) or default).strip().lower()
     if value not in allowed:
@@ -126,8 +140,14 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         max_cost_usd=_float("DEVPILOT_MAX_COST_USD", 2.0),
         max_tokens=_int("DEVPILOT_MAX_TOKENS", 1_500_000),
         command_timeout=_int("DEVPILOT_COMMAND_TIMEOUT", 120),
-        sandbox_image=os.environ.get("DEVPILOT_SANDBOX_IMAGE") or "python:3.12-slim",
+        sandbox_image=os.environ.get("DEVPILOT_SANDBOX_IMAGE") or DEFAULT_BASE_IMAGE,
         sandbox_network=_bool("DEVPILOT_SANDBOX_NETWORK", False),
+        sandbox_install_deps=_bool("DEVPILOT_SANDBOX_INSTALL_DEPS", True),
         runs_dir=Path(os.environ.get("DEVPILOT_RUNS_DIR") or "runs"),
         workspace_dir=Path(os.environ.get("DEVPILOT_WORKSPACE_DIR") or "workspace"),
+        web_token=os.environ.get("DEVPILOT_WEB_TOKEN") or None,
+        web_max_jobs=_int("DEVPILOT_WEB_MAX_JOBS", 2),
+        web_runs_per_hour=_int("DEVPILOT_WEB_RUNS_PER_HOUR", 20),
+        web_allowed_repos=_list("DEVPILOT_WEB_ALLOWED_REPOS"),
+        web_allowed_hosts=_list("DEVPILOT_WEB_ALLOWED_HOSTS"),
     )

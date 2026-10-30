@@ -37,9 +37,19 @@ class RunOutcome:
     workspace: str
     branch: str | None = None
     pr_url: str | None = None
+    pr_skipped: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def pr_block_reason(outcome: RunOutcome) -> str | None:
+    """Why a pull request must not be opened for this outcome, or None if it may be."""
+    if outcome.status != "finished":
+        return f"the run ended with status {outcome.status!r}"
+    if outcome.tests_passed is not True:
+        return "the full test suite did not pass on the final code"
+    return None
 
 
 def issue_to_task(issue: IssueInfo) -> str:
@@ -93,11 +103,18 @@ def _solve(
             base_image=settings.sandbox_image,
             network=settings.sandbox_network,
             timeout=settings.command_timeout,
+            install_dependencies=settings.sandbox_install_deps,
         ) as sandbox:
+            setup_report = getattr(sandbox, "setup_report", None)
+            if setup_report:
+                log.update(environment=setup_report)
             tools = ToolExecutor(workspace, sandbox, command_timeout=settings.command_timeout)
             plan, plan_usage = make_plan(provider, task, tools.list_files().content)
             log.set_plan(plan)
-            result = Agent(provider, settings, tools, log, usage=plan_usage).run(task, plan)
+            agent_task = task
+            if setup_report:
+                agent_task += f"\n\n<environment>\n{setup_report}\n</environment>"
+            result = Agent(provider, settings, tools, log, usage=plan_usage).run(agent_task, plan)
     except Exception as exc:
         log.finish("error", summary=f"{type(exc).__name__}: {exc}")
         raise
@@ -174,15 +191,22 @@ def run_on_github(
     outcome = _solve(task_text, workspace, settings, log, provider, sandbox_factory)
     outcome.branch = branch
 
-    if open_pr and outcome.status == "finished" and repo.has_changes():
-        try:
-            outcome.pr_url = _publish(
-                repo, github, repo_name, branch, base_branch, outcome, task_text, issue
-            )
-        except GitHubError as exc:
-            log.update(pr_error=str(exc))
-            raise
-        log.update(pr_url=outcome.pr_url)
+    if not open_pr or not repo.has_changes():
+        return outcome
+    # Checked here as well as in the agent, so no code path can publish unverified work.
+    reason = pr_block_reason(outcome)
+    if reason:
+        outcome.pr_skipped = f"No pull request opened: {reason}."
+        log.update(pr_skipped=outcome.pr_skipped)
+        return outcome
+    try:
+        outcome.pr_url = _publish(
+            repo, github, repo_name, branch, base_branch, outcome, task_text, issue
+        )
+    except GitHubError as exc:
+        log.update(pr_error=str(exc))
+        raise
+    log.update(pr_url=outcome.pr_url)
     return outcome
 
 

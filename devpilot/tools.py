@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import shlex
@@ -12,6 +13,7 @@ from devpilot.sandbox import WORKDIR, CommandResult, Sandbox
 MAX_OUTPUT_CHARS = 12_000
 MAX_READ_CHARS = 40_000
 MAX_LISTED_FILES = 500
+MAX_HASHED_FILE_BYTES = 2_000_000
 IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "node_modules"}
 DEFAULT_TEST_COMMAND = "python -m pytest -q"
 PYTEST_PATTERN = re.compile(r"\bpytest\b")
@@ -84,7 +86,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "run_tests",
         "description": f"Run the test suite in the sandbox with `{DEFAULT_TEST_COMMAND}`. "
-        "Optionally limit it to a file, directory or test node id.",
+        "Optionally limit it to a file, directory or test node id. Only a run without a target "
+        "verifies the work for finish.",
         "input_schema": {
             "type": "object",
             "properties": {"target": {"type": "string"}},
@@ -92,8 +95,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "finish",
-        "description": "Call once the task is complete and the tests pass. The summary becomes "
-        "the pull request description, so describe what changed and why.",
+        "description": "Call once the task is complete and the full test suite passes. It is "
+        "rejected unless run_tests (without a target) passed after your last change. The summary "
+        "becomes the pull request description, so describe what changed and why.",
         "input_schema": {
             "type": "object",
             "properties": {"summary": {"type": "string"}},
@@ -126,6 +130,29 @@ def _format_command_result(result: CommandResult) -> str:
     return f"exit code: {result.exit_code}\n{truncate_middle(result.output)}"
 
 
+def workspace_fingerprint(root: Path) -> str:
+    """Hash the workspace's files, to detect any change to the code since the tests ran.
+
+    Contents are hashed because an edit can keep the size and land within the filesystem's
+    timestamp granularity; very large files fall back to size and modification time.
+    """
+    digest = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in IGNORED_DIRS)
+        for filename in sorted(filenames):
+            path = Path(dirpath) / filename
+            try:
+                stat = path.stat()
+                if stat.st_size <= MAX_HASHED_FILE_BYTES:
+                    content = hashlib.sha256(path.read_bytes()).hexdigest()
+                else:
+                    content = f"{stat.st_size}:{stat.st_mtime_ns}"
+            except OSError:
+                continue
+            digest.update(f"{path.relative_to(root).as_posix()}\0{content}\n".encode())
+    return digest.hexdigest()
+
+
 class ToolExecutor:
     def __init__(
         self,
@@ -140,6 +167,8 @@ class ToolExecutor:
         self.command_timeout = command_timeout
         self.test_command = test_command
         self.last_tests_passed: bool | None = None
+        # Workspace state when the full suite last passed; any later change invalidates it.
+        self._verified_state: str | None = None
         self._handlers: dict[str, Callable[..., ToolResult]] = {
             "list_files": self.list_files,
             "read_file": self.read_file,
@@ -248,7 +277,23 @@ class ToolExecutor:
             command += " " + shlex.quote(target)
         result = self.sandbox.run(command, timeout=self.command_timeout)
         self.last_tests_passed = result.exit_code == 0
+        if not target:
+            passed = self.last_tests_passed and not result.timed_out
+            self._verified_state = workspace_fingerprint(self.workspace) if passed else None
         return ToolResult(_format_command_result(result))
+
+    def tests_verified(self) -> bool:
+        """True if the full suite passed and the workspace hasn't changed since."""
+        return self._verified_state is not None and self._verified_state == workspace_fingerprint(
+            self.workspace
+        )
+
+    @property
+    def tests_passed(self) -> bool | None:
+        """Test status to report: True only when verified, None when stale or never run."""
+        if self.tests_verified():
+            return True
+        return False if self.last_tests_passed is False else None
 
     def finish(self, summary: str) -> ToolResult:
         return ToolResult(summary)

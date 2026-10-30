@@ -44,6 +44,8 @@ def print_outcome(outcome: RunOutcome) -> None:
         print(f"Branch: {outcome.branch}")
     if outcome.pr_url:
         print(f"Pull request: {outcome.pr_url}")
+    elif outcome.pr_skipped:
+        print(outcome.pr_skipped)
     print(f"\nSummary:\n{outcome.summary}")
 
 
