@@ -102,6 +102,32 @@ def test_token_is_required_when_configured():
         assert stream.status_code == 200
 
 
+def test_non_ascii_token_is_rejected_not_a_server_error():
+    client = make_client(fake_runner, web_token=TOKEN)
+
+    response = client.get("/api/config", headers={"Authorization": "Bearer tést".encode()})
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "content_type", ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data"]
+)
+def test_cross_site_simple_requests_cannot_start_runs(content_type):
+    """Browsers send these cross-origin without a CORS preflight; they must not start a run."""
+    started = []
+    client = make_client(lambda request, *_: started.append(request) or fake_runner(request, *_))
+
+    response = client.post(
+        "/api/runs",
+        content='{"task": "attacker task"}',
+        headers={"Content-Type": content_type, "Origin": "https://evil.example"},
+    )
+
+    assert response.status_code == 422
+    assert started == []
+
+
 def test_concurrent_runs_are_limited():
     release = threading.Event()
 

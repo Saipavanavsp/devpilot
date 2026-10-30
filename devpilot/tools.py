@@ -2,6 +2,7 @@ import hashlib
 import os
 import re
 import shlex
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,11 @@ MAX_HASHED_FILE_BYTES = 2_000_000
 IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "node_modules"}
 DEFAULT_TEST_COMMAND = "python -m pytest -q"
 PYTEST_PATTERN = re.compile(r"\bpytest\b")
+PASSED_PATTERN = re.compile(r"\b(\d+) passed\b")
+NOTHING_PASSED = (
+    "\n[DevPilot: no test passed (all skipped, deselected or none collected), so this run "
+    "does not count as passing.]"
+)
 
 TOOL_SPECS: list[dict[str, Any]] = [
     {
@@ -130,23 +136,40 @@ def _format_command_result(result: CommandResult) -> str:
     return f"exit code: {result.exit_code}\n{truncate_middle(result.output)}"
 
 
+def tests_passed_in(result: CommandResult) -> bool:
+    """A pytest run passed if it exited cleanly and at least one test actually passed."""
+    if result.exit_code != 0 or result.timed_out:
+        return False
+    return any(int(count) > 0 for count in PASSED_PATTERN.findall(result.output))
+
+
+def _is_link(dirpath: str, name: str) -> bool:
+    return os.path.islink(os.path.join(dirpath, name))
+
+
 def workspace_fingerprint(root: Path) -> str:
     """Hash the workspace's files, to detect any change to the code since the tests ran.
 
     Contents are hashed because an edit can keep the size and land within the filesystem's
     timestamp granularity; very large files fall back to size and modification time.
+    Symlinks and special files are never followed or opened: code in the sandbox can create
+    them, and reading a FIFO or a link to /dev/zero on the host would hang or exhaust memory.
     """
     digest = hashlib.sha256()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in IGNORED_DIRS)
-        for filename in sorted(filenames):
+        for filename in sorted([*filenames, *(d for d in dirnames if _is_link(dirpath, d))]):
             path = Path(dirpath) / filename
             try:
-                stat = path.stat()
-                if stat.st_size <= MAX_HASHED_FILE_BYTES:
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    content = f"link:{os.readlink(path)}"
+                elif not stat.S_ISREG(info.st_mode):
+                    content = f"special:{stat.S_IFMT(info.st_mode)}"
+                elif info.st_size <= MAX_HASHED_FILE_BYTES:
                     content = hashlib.sha256(path.read_bytes()).hexdigest()
                 else:
-                    content = f"{stat.st_size}:{stat.st_mtime_ns}"
+                    content = f"{info.st_size}:{info.st_mtime_ns}"
             except OSError:
                 continue
             digest.update(f"{path.relative_to(root).as_posix()}\0{content}\n".encode())
@@ -267,8 +290,9 @@ class ToolExecutor:
         seconds = min(timeout or self.command_timeout, self.command_timeout)
         result = self.sandbox.run(command, timeout=seconds)
         # Models often run pytest directly instead of calling run_tests; count those runs too.
+        # These runs are reported but never verify the work; only a full run_tests does.
         if PYTEST_PATTERN.search(command):
-            self.last_tests_passed = result.exit_code == 0
+            self.last_tests_passed = tests_passed_in(result)
         return ToolResult(_format_command_result(result), is_error=result.timed_out)
 
     def run_tests(self, target: str | None = None) -> ToolResult:
@@ -276,11 +300,14 @@ class ToolExecutor:
         if target:
             command += " " + shlex.quote(target)
         result = self.sandbox.run(command, timeout=self.command_timeout)
-        self.last_tests_passed = result.exit_code == 0
+        self.last_tests_passed = tests_passed_in(result)
         if not target:
-            passed = self.last_tests_passed and not result.timed_out
+            passed = self.last_tests_passed
             self._verified_state = workspace_fingerprint(self.workspace) if passed else None
-        return ToolResult(_format_command_result(result))
+        output = _format_command_result(result)
+        if result.exit_code == 0 and not self.last_tests_passed:
+            output += NOTHING_PASSED
+        return ToolResult(output)
 
     def tests_verified(self) -> bool:
         """True if the full suite passed and the workspace hasn't changed since."""

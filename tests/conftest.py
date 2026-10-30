@@ -16,7 +16,7 @@ class FakeSandbox:
         self.commands.append(command)
         if self.results:
             return self.results.pop(0)
-        return CommandResult(exit_code=0, output="")
+        return CommandResult(exit_code=0, output="1 passed in 0.01s")
 
 
 @pytest.fixture

@@ -77,6 +77,18 @@ def test_git_repo_branch_commit_push(tmp_path, remote):
     assert log.splitlines()[0] == "DevPilot <bot@example.com> Fix add"
 
 
+def test_host_git_never_runs_repository_hooks(tmp_path, remote):
+    repo = GitRepo.clone(str(remote), tmp_path / "clone")
+    hook = tmp_path / "clone" / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho ran > hook_ran\nexit 1\n", newline="\n")
+    hook.chmod(0o755)
+    (tmp_path / "clone" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+    repo.commit_all("Fix add", "DevPilot", "bot@example.com")  # exit 1 would fail the commit
+
+    assert not (tmp_path / "clone" / "hook_ran").exists()
+
+
 def test_git_errors_are_reported(tmp_path):
     with pytest.raises(GitHubError, match="git clone failed"):
         GitRepo.clone(str(tmp_path / "missing.git"), tmp_path / "clone")

@@ -129,6 +129,15 @@ def test_start_mounts_only_the_workspace_with_hardening(tmp_path, fake_client):
     assert kwargs["pids_limit"] > 0
 
 
+def test_git_directory_is_mounted_read_only(tmp_path, fake_client):
+    (tmp_path / ".git").mkdir()
+
+    DockerSandbox(tmp_path, client=fake_client).start()
+
+    volumes = fake_client.containers.run.call_args.kwargs["volumes"]
+    assert volumes[str(tmp_path.resolve() / ".git")] == {"bind": f"{WORKDIR}/.git", "mode": "ro"}
+
+
 def test_network_can_be_enabled(tmp_path, fake_client):
     DockerSandbox(tmp_path, network=True, client=fake_client).start()
 
@@ -216,3 +225,34 @@ def test_real_container_isolation(tmp_path: Path):
         assert sandbox.run("sleep 30", timeout=2).timed_out
 
     assert (tmp_path / "out.txt").read_text().strip() == "made"
+
+
+@pytest.mark.docker
+@pytest.mark.skipif(not _docker_available(), reason="Docker daemon not available")
+def test_real_container_cannot_tamper_with_git(tmp_path: Path):
+    """Host git runs hooks from .git, so the container must not be able to write there."""
+    (tmp_path / ".git" / "hooks").mkdir(parents=True)
+
+    with DockerSandbox(tmp_path, timeout=20) as sandbox:
+        planted = sandbox.run("echo 'touch /tmp/pwned' > .git/hooks/pre-commit")
+        assert sandbox.run("echo ok > normal.txt").exit_code == 0
+
+    assert planted.exit_code != 0
+    assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+    assert (tmp_path / "normal.txt").exists()
+
+
+@pytest.mark.docker
+@pytest.mark.skipif(not _docker_available(), reason="Docker daemon not available")
+def test_real_dependency_install_then_offline(tmp_path: Path):
+    (tmp_path / "requirements.txt").write_text("six==1.17.0\n")
+
+    with DockerSandbox(tmp_path, timeout=30, install_dependencies=True) as sandbox:
+        assert "were installed" in sandbox.setup_report
+        assert sandbox.run("python -c 'import six'").exit_code == 0
+        assert sandbox.run("touch /opt/devpilot-deps/x").exit_code != 0
+        connect = "python -c 'import socket; socket.create_connection((\"1.1.1.1\", 53), 3)'"
+        assert sandbox.run(connect).exit_code != 0
+        deps_dir = sandbox._deps_dir
+
+    assert deps_dir is not None and not deps_dir.exists()

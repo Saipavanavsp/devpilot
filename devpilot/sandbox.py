@@ -154,6 +154,11 @@ class DockerSandbox:
             return
         image = self._ensure_image()
         volumes = {str(self.workspace): {"bind": WORKDIR, "mode": "rw"}}
+        git_dir = self.workspace / ".git"
+        if git_dir.exists():
+            # Git runs on the host (commit, push), so a writable .git would let code in the
+            # container plant hooks or config that the host then executes.
+            volumes[str(git_dir)] = {"bind": f"{WORKDIR}/.git", "mode": "ro"}
         environment = {"HOME": "/tmp", "PYTHONDONTWRITEBYTECODE": "1"}
         deps_dir = self._install_dependencies(image) if self.install_dependencies else None
         if deps_dir is not None:

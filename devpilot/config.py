@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -41,9 +41,10 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class Settings:
-    anthropic_api_key: str | None
-    github_token: str | None
-    google_api_key: str | None = None
+    # Secrets are left out of repr so they can't leak into tracebacks or logs.
+    anthropic_api_key: str | None = field(repr=False)
+    github_token: str | None = field(repr=False)
+    google_api_key: str | None = field(default=None, repr=False)
     provider: str = "anthropic"
     model: str = DEFAULT_MODELS["anthropic"]
     effort: str = "medium"
@@ -57,7 +58,7 @@ class Settings:
     runs_dir: Path = Path("runs")
     workspace_dir: Path = Path("workspace")
     # Web UI access control.
-    web_token: str | None = None
+    web_token: str | None = field(default=None, repr=False)
     web_max_jobs: int = 2
     web_runs_per_hour: int = 20
     web_allowed_repos: tuple[str, ...] = ()

@@ -1,7 +1,9 @@
+import os
+
 import pytest
 
 from devpilot.sandbox import CommandResult
-from devpilot.tools import TOOL_SPECS, ToolExecutor, truncate_middle
+from devpilot.tools import TOOL_SPECS, ToolExecutor, truncate_middle, workspace_fingerprint
 
 
 @pytest.fixture
@@ -151,6 +153,30 @@ def test_partial_or_failing_runs_do_not_verify(executor, fake_sandbox):
     executor.execute("run_tests", {})
     assert not executor.tests_verified()
     assert executor.tests_passed is False
+
+
+def test_run_with_nothing_passed_does_not_verify(executor, fake_sandbox):
+    """E.g. every test skipped because a dependency is missing: pytest still exits 0."""
+    fake_sandbox.results.append(CommandResult(exit_code=0, output="3 skipped in 0.01s"))
+
+    result = executor.execute("run_tests", {})
+
+    assert not executor.tests_verified()
+    assert executor.tests_passed is False
+    assert "no test passed" in result.content
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")
+def test_fingerprint_never_opens_special_files(executor, tmp_path):
+    """Sandbox code can create a FIFO in the workspace; opening it on the host would hang."""
+    os.mkfifo(tmp_path / "trap")
+    os.symlink("/dev/zero", tmp_path / "zero")
+
+    before = workspace_fingerprint(tmp_path)  # returns instead of blocking
+
+    os.remove(tmp_path / "zero")
+    os.symlink("/dev/null", tmp_path / "zero")
+    assert workspace_fingerprint(tmp_path) != before  # retargeting a link is a change
 
 
 def test_finish_returns_summary(executor):

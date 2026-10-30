@@ -9,6 +9,9 @@ from github import Auth, Github
 from github.GithubException import GithubException
 
 REPO_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
+# The agent edits the working tree, so git on the host must never run code configured in the
+# repository: no hooks, no fsmonitor command.
+SAFE_GIT_CONFIG = ["-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false"]
 
 
 class GitHubError(Exception):
@@ -61,7 +64,7 @@ class GitRepo:
 
     def _git(self, *args: str, cwd: Path | None = None) -> str:
         completed = subprocess.run(
-            ["git", *args],
+            ["git", *SAFE_GIT_CONFIG, *args],
             cwd=cwd or self.path,
             env=_auth_env(self._token),
             capture_output=True,

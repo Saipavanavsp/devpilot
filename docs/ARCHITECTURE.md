@@ -54,7 +54,7 @@ The seven tools the model can call and their JSON schemas: `list_files`, `read_f
 - File tools work directly on the host workspace folder. Every path goes through `resolve()`, which rejects anything outside the workspace (including `..` tricks and absolute paths) and the `.git` directory.
 - `edit_file` is search and replace. The old text must match exactly once; zero or multiple matches return an error that tells the model what to do instead.
 - `run_command` and `run_tests` never run on the host. They check the command against the blocklist and then run it in the sandbox.
-- After a full, passing `run_tests`, the executor stores a hash of every workspace file. `tests_verified()` compares it with the current state, so any later change, through a file tool or a shell command, makes the agent run the tests again before it can finish.
+- After a full, passing `run_tests`, the executor stores a hash of every workspace file. `tests_verified()` compares it with the current state, so any later change, through a file tool or a shell command, makes the agent run the tests again before it can finish. A run counts as passing only if pytest exits 0 and reports at least one passed test (`tests_passed_in`), so an all-skipped or empty suite doesn't verify anything. The hash uses `lstat` and never opens symlinks or special files: sandbox code can create a FIFO or a link to `/dev/zero`, and reading those on a Linux host would hang or exhaust memory.
 - Long outputs are trimmed in the middle, keeping the start and the end, because test failures usually show up at the end.
 
 ### `safety.py`
@@ -63,7 +63,7 @@ A regex blocklist of commands the agent should never try: recursive deletes outs
 ### `sandbox.py`
 Runs commands in a Docker container started from `python:3.12-slim`, pinned by its multi-architecture digest, with a pinned pytest preinstalled in a derived image that is built once and cached. The image tag includes the base image and pytest version, so changing either builds a fresh image. The container is locked down:
 
-- only the workspace is mounted, at `/workspace`
+- only the workspace is mounted, at `/workspace`, and its `.git` directory is mounted read-only on top, because git runs on the host and would execute hooks or config planted there
 - no network by default (`network_mode="none"`)
 - read-only root filesystem, with a tmpfs for `/tmp`
 - all Linux capabilities dropped, `no-new-privileges`, non-root user
@@ -77,7 +77,7 @@ Before it starts, `install_dependencies` looks for `requirements.txt`, `requirem
 ### `github_client.py`
 Two classes:
 
-- `GitRepo` drives a local clone with the git CLI: clone, create a branch, add local-only ignores, commit, push and show the diff stat. The GitHub token is passed to git as an HTTP header through `GIT_CONFIG_*` environment variables, so it never appears in process arguments or in the clone's `.git/config`.
+- `GitRepo` drives a local clone with the git CLI: clone, create a branch, add local-only ignores, commit, push and show the diff stat. Every call passes `core.hooksPath` set to the null device and `core.fsmonitor=false`, so no repository-configured code runs on the host. The GitHub token is passed to git as an HTTP header through `GIT_CONFIG_*` environment variables, so it never appears in process arguments or in the clone's `.git/config`.
 - `GitHubClient` uses PyGithub for the API side: reading an issue, opening a pull request, and getting the token owner's noreply email for commit authorship.
 
 ### `pipeline.py`
@@ -98,7 +98,7 @@ A FastAPI app with a single static page. `POST /api/runs` starts a run on a back
 Access control: `TrustedHostMiddleware` only accepts `localhost`/`127.0.0.1` Host headers by default, which stops DNS rebinding. With `DEVPILOT_WEB_TOKEN` set, every `/api` route needs `Authorization: Bearer <token>`; the page reads the event stream with `fetch` so it can send that header. `serve()` refuses non-loopback bind addresses without a token. `JobManager` caps concurrent runs and runs started per hour (HTTP 429) and forgets old finished jobs, and an optional repository allowlist rejects other repos (HTTP 403).
 
 ### `benchmarks/`
-Eight small tasks, each with `task.md` (the prompt), `repo/` (starting code with a few visible tests) and `hidden/` (grading tests). `run_benchmark.py` copies each repo into a fresh workspace, runs the agent, then copies the hidden tests in and runs them in the sandbox. A task counts as solved only if the hidden tests pass, so the agent can't game the result by editing its own tests. `--repeats N` runs each task several times for a success rate. Each task's untouched starting code is graded too, as a no-agent baseline. Results record the provider, model, sandbox image digest, pytest version and DevPilot commit.
+Eight small tasks, each with `task.md` (the prompt), `repo/` (starting code with a few visible tests) and `hidden/` (grading tests). `run_benchmark.py` copies each repo into a fresh workspace, runs the agent, then copies the hidden tests in and runs them in the sandbox. A task counts as solved only if the hidden tests pass, so the agent can't game the result by editing its own tests. Grading treats the workspace as untrusted. It runs with `--noconftest` and a fresh `pytest.ini`, so the agent's conftest files and pytest config are ignored. It fails any workspace with a module that would shadow pytest, and it requires passing tests with nothing failed, skipped or deselected. `--repeats N` runs each task several times for a success rate. Attempts that end in an API or infrastructure error are listed separately and excluded from the rate, and a run where every attempt errored isn't written to `results.md`. Each task's untouched starting code is graded too, as a no-agent baseline. Results record the provider, model, sandbox image digest, pytest version and DevPilot commit.
 
 ## Testing
 
@@ -108,4 +108,4 @@ Unit tests in `tests/` mock the network and the model APIs:
 - `FakeSandbox` records commands instead of starting Docker.
 - PyGithub objects are `MagicMock`s, while git itself runs for real against a local bare repository, so clone, branch, commit and push are exercised without touching GitHub.
 
-One test (`test_real_container_isolation`) starts a real container to check the mount, the read-only root, the missing network and the timeout. It is skipped when Docker isn't running.
+Tests marked `docker` start real containers. They check the mount, the read-only root, the missing network and the timeout, that the container can't write to `.git`, that dependency setup installs packages and leaves the run container offline, and that benchmark grading rejects planted `conftest.py`, `pytest.ini` and `pytest.py` files. They're skipped when Docker isn't running and run in CI.

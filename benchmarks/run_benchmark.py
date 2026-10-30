@@ -28,11 +28,15 @@ from typing import Any
 from devpilot.config import Settings, load_settings
 from devpilot.pipeline import run_task
 from devpilot.sandbox import PYTEST_VERSION, DockerSandbox
+from devpilot.tools import tests_passed_in
 
 TASKS_DIR = Path(__file__).parent / "tasks"
 RESULTS_FILE = Path(__file__).parent / "results.md"
 GRADING_DIR = "_grading"
 HIDDEN_TEST = re.compile(r"^\s*def test_", re.MULTILINE)
+# Any of these would let the hidden tests pass without running them.
+FAILED_PATTERN = re.compile(r"\b\d+ (failed|errors?|skipped|xfailed|deselected)\b")
+SHADOWING_NAMES = ["pytest.py", "pytest", "_pytest", "py.py", "pluggy", "pluggy.py"]
 
 
 @dataclass
@@ -53,14 +57,20 @@ class TaskSummary:
     hidden_tests: int
     baseline_solved: bool
     attempts: int
+    errors: int
     solved: int
     avg_steps: float
     avg_cost_usd: float
     statuses: dict[str, int]
 
     @property
+    def completed(self) -> int:
+        """Attempts where the agent actually ran (API or infrastructure errors excluded)."""
+        return self.attempts - self.errors
+
+    @property
     def success_rate(self) -> float:
-        return self.solved / self.attempts if self.attempts else 0.0
+        return self.solved / self.completed if self.completed else 0.0
 
 
 def discover_tasks(prefixes: list[str] | None) -> list[Path]:
@@ -79,14 +89,26 @@ def hidden_test_count(task_dir: Path) -> int:
 
 
 def grade(task_dir: Path, workspace: Path, settings: Settings) -> bool:
+    """Run the hidden tests against the agent's code, ignoring anything it could use to cheat.
+
+    The workspace is agent-controlled, so its conftest.py files and pytest config are ignored,
+    and a module that would shadow pytest itself fails the task outright.
+    """
+    if any((workspace / name).exists() for name in SHADOWING_NAMES):
+        return False
     grading = workspace / GRADING_DIR
     shutil.rmtree(grading, ignore_errors=True)
     shutil.copytree(task_dir / "hidden", grading)
+    (grading / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    command = (
+        f"python -m pytest -q --noconftest -p no:cacheprovider "
+        f"-c {GRADING_DIR}/pytest.ini --rootdir=. {GRADING_DIR}"
+    )
     with DockerSandbox(
         workspace, base_image=settings.sandbox_image, timeout=settings.command_timeout
     ) as sandbox:
-        result = sandbox.run(f"python -m pytest -q {GRADING_DIR}")
-    return result.exit_code == 0
+        result = sandbox.run(command)
+    return tests_passed_in(result) and not FAILED_PATTERN.search(result.output)
 
 
 def grade_baseline(task_dir: Path, settings: Settings, root: Path) -> bool:
@@ -119,14 +141,16 @@ def summarize(task_dir: Path, baseline: bool, attempts: list[Attempt]) -> TaskSu
     statuses: dict[str, int] = {}
     for attempt in attempts:
         statuses[attempt.status] = statuses.get(attempt.status, 0) + 1
+    ran = [a for a in attempts if a.status != "error"]
     return TaskSummary(
         task=task_dir.name,
         hidden_tests=hidden_test_count(task_dir),
         baseline_solved=baseline,
         attempts=len(attempts),
-        solved=sum(a.solved for a in attempts),
-        avg_steps=mean(a.steps for a in attempts) if attempts else 0.0,
-        avg_cost_usd=mean(a.cost_usd for a in attempts) if attempts else 0.0,
+        errors=len(attempts) - len(ran),
+        solved=sum(a.solved for a in ran),
+        avg_steps=mean(a.steps for a in ran) if ran else 0.0,
+        avg_cost_usd=mean(a.cost_usd for a in ran) if ran else 0.0,
         statuses=statuses,
     )
 
@@ -164,27 +188,29 @@ def results_table(summaries: list[TaskSummary], env: dict[str, Any]) -> str:
     env_lines = "\n".join(f"- {key}: `{value}`" for key, value in env.items())
     lines = [
         "| Task | Hidden tests | Solved without agent | Solved | Success rate "
-        "| Avg steps | Avg est. cost (USD) | Agent statuses |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Avg steps | Avg est. cost (USD) | Agent statuses | Errors (excluded) |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for s in summaries:
         statuses = ", ".join(f"{name} x{count}" for name, count in sorted(s.statuses.items()))
         lines.append(
             f"| {s.task} | {s.hidden_tests} | {'yes' if s.baseline_solved else 'no'} "
-            f"| {s.solved}/{s.attempts} | {s.success_rate:.0%} | {s.avg_steps:.1f} "
-            f"| {s.avg_cost_usd:.4f} | {statuses} |"
+            f"| {s.solved}/{s.completed} | {s.success_rate:.0%} | {s.avg_steps:.1f} "
+            f"| {s.avg_cost_usd:.4f} | {statuses} | {s.errors} |"
         )
-    attempts = sum(s.attempts for s in summaries)
+    completed = sum(s.completed for s in summaries)
     solved = sum(s.solved for s in summaries)
-    all_steps = [s.avg_steps * s.attempts for s in summaries]
-    all_costs = [s.avg_cost_usd * s.attempts for s in summaries]
-    rate = solved / attempts if attempts else 0.0
+    total_steps = sum(s.avg_steps * s.completed for s in summaries)
+    total_cost = sum(s.avg_cost_usd * s.completed for s in summaries)
+    rate = solved / completed if completed else 0.0
     lines.append(
         f"| **Total** | | **{sum(s.baseline_solved for s in summaries)}/{len(summaries)}** "
-        f"| **{solved}/{attempts}** | **{rate:.0%}** "
-        f"| **{sum(all_steps) / max(attempts, 1):.1f}** "
-        f"| **{sum(all_costs) / max(attempts, 1):.4f}** | |"
+        f"| **{solved}/{completed}** | **{rate:.0%}** "
+        f"| **{total_steps / max(completed, 1):.1f}** "
+        f"| **{total_cost / max(completed, 1):.4f}** | "
+        f"| **{sum(s.errors for s in summaries)}** |"
     )
+    lines.append(f"\nTotal estimated cost of this run: ${total_cost:.4f}")
     return f"Environment:\n\n{env_lines}\n\n" + "\n".join(lines)
 
 
@@ -238,6 +264,9 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
+    if all(a.status == "error" for a in attempts):
+        print(f"\nEvery attempt failed before the agent ran; saved {report} only.")
+        return 2
     # Append, so runs with different models or task subsets are all kept.
     if not RESULTS_FILE.exists():
         RESULTS_FILE.write_text("# Benchmark results\n", encoding="utf-8")

@@ -48,6 +48,16 @@ def test_web_settings_from_env(monkeypatch):
     assert settings.web_allowed_repos == ("octo/one", "octo/two")
 
 
+def test_secrets_are_not_in_repr(monkeypatch):
+    for name in ["ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GITHUB_TOKEN", "DEVPILOT_WEB_TOKEN"]:
+        monkeypatch.setenv(name, f"secret-{name}")
+
+    text = repr(load_settings(None))
+
+    assert "secret-" not in text
+    assert "max_steps" in text
+
+
 def test_reads_values_from_env_file(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text(

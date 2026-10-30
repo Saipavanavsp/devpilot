@@ -160,7 +160,7 @@ Real runs inside the Docker sandbox, graded by the hidden tests (from [benchmark
 
 Each task starts from a stub or buggy module with a couple of visible tests. A task is solved only if a separate hidden test suite, copied in after the agent finishes, passes in the sandbox. Every hidden suite was checked against a reference solution: it fails on the starting code and passes on a correct one.
 
-**These numbers are a smoke test, not a performance claim.** They are two single attempts on two different models, run on the Gemini free tier (20 requests per model per day), before verified completion was enforced. The other six tasks, repeated attempts and the Claude provider have not been run live yet. The benchmark script is ready for that: `--repeats N` gives a per-task success rate, it reports average steps and cost, the number of hidden tests per task as a rough measure of complexity, and a baseline that grades the untouched starting code (what you get without the agent), and it records the model, sandbox image digest, pytest version and DevPilot commit used. Costs are estimates from token counts and each model's paid list price.
+**These numbers are a smoke test, not a performance claim.** They are single attempts on Gemini's free tier, which allows about 20 requests per model per day, roughly one or two agent runs. A full run (8 tasks x 3 attempts on Gemini and Claude) was attempted on 30 October 2026. It stopped after one completed attempt (`01_slugify`, solved in 10 steps): Gemini hit the free-tier quota and the Claude account had no API credit. The details are in [benchmarks/results.md](benchmarks/results.md). A real success rate needs a paid Gemini tier or Anthropic credit. The benchmark script is ready for that: `--repeats N` gives a per-task success rate, it reports average steps and cost, the number of hidden tests per task as a rough measure of complexity, and a baseline that grades the untouched starting code (what you get without the agent), and it records the model, sandbox image digest, pytest version and DevPilot commit used. Attempts that fail on an API error (quota, billing) are reported separately and not counted as failed solves. Grading ignores the agent's `conftest.py` files and pytest config, and fails a workspace that shadows pytest, so an agent can't fake the hidden tests. Costs are estimates from token counts and each model's paid list price, not billed amounts.
 
 **Live GitHub test.** `devpilot issue Saipavanavsp/devpilot-demo 1` (on `gemini-3.1-flash-lite`) read [issue #1](https://github.com/Saipavanavsp/devpilot-demo/issues/1), reproduced the bug with a test, fixed `Inventory.remove()`, added four tests and opened [pull request #2](https://github.com/Saipavanavsp/devpilot-demo/pull/2) in 13 steps (estimated $0.01).
 
@@ -170,8 +170,9 @@ Agents that run code need guardrails. DevPilot layers them:
 
 | Layer | What it does |
 |---|---|
-| Verified completion | `finish` is rejected unless the full test suite passed on the current code; the pipeline separately refuses to open a PR for anything but a verified `finished` run. |
+| Verified completion | `finish` is rejected unless the full test suite passed on the current code with at least one test actually passing (all-skipped doesn't count); the pipeline separately refuses to open a PR for anything but a verified `finished` run. |
 | Docker sandbox | Commands run in a throwaway container: only the workspace is mounted, no network by default, read-only root filesystem, all capabilities dropped, `no-new-privileges`, non-root user, 1 GB memory, 2 CPUs, 256 processes. The base image is pinned by digest and pytest by version. |
+| Host git | The workspace's `.git` is mounted read-only in the container, and every git command DevPilot runs on the host disables hooks and `core.fsmonitor`, so code in the sandbox can't plant something the host later executes. |
 | Dependency setup | Repository dependencies are installed by a separate, equally locked-down setup container that sees the workspace read-only. It is the only step with network access; the virtualenv is mounted read-only into the offline run container. Turn it off with `DEVPILOT_SANDBOX_INSTALL_DEPS=false`. |
 | Web UI | Local-only by default with a Host-header check; a token is required for any other bind address. Repository allowlist, concurrency and hourly run limits. |
 | Command timeout | Every command is wrapped in `timeout`, so a hanging test or infinite loop is killed (default 120 s). |
@@ -180,6 +181,14 @@ Agents that run code need guardrails. DevPilot layers them:
 | Run budgets | Maximum steps, maximum estimated cost (USD) and maximum tokens per run. Unknown models are priced at the most expensive tier. |
 | Human review | DevPilot never pushes to the default branch. Its work arrives as a pull request on a new branch for a person to review. |
 | Secrets | Keys are read from `.env` only. The GitHub token goes to git as an environment-provided header, so it isn't written to `.git/config` or visible in process arguments. The repository is scanned with gitleaks before every push. |
+
+### Known limitations
+
+- **Verification is only as strong as the repository's tests.** The agent may edit tests (it's told not to weaken them), so reviewers should read test changes in the PR. The benchmark grades with hidden tests for this reason.
+- **Disk usage isn't capped.** The workspace is a host bind mount, so a command could fill the host disk within its timeout.
+- **A hard kill leaves containers behind.** Normal exits and Ctrl+C remove them, but a killed process doesn't. Clean up with `docker rm -f $(docker ps -aq --filter name=devpilot-)`.
+- **Network access trusts the repository.** With `DEVPILOT_SANDBOX_NETWORK=true`, and during dependency setup, containers can reach the network, including services on the host (for example via `host.docker.internal` on Docker Desktop).
+- **The command blocklist can be bypassed.** It's a speed bump; the container is the security boundary.
 
 ## Project layout
 

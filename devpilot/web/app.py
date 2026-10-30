@@ -132,7 +132,9 @@ def token_checker(token: str | None) -> Callable[[Request], None]:
         if token is None:
             return
         scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
-        if scheme.lower() != "bearer" or not secrets.compare_digest(supplied, token):
+        # Compare bytes: compare_digest rejects non-ASCII str, which would surface as a 500.
+        valid = secrets.compare_digest(supplied.encode(), token.encode())
+        if scheme.lower() != "bearer" or not valid:
             raise HTTPException(401, "Missing or invalid token.", {"WWW-Authenticate": "Bearer"})
 
     return check
