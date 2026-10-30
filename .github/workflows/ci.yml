@@ -32,6 +32,17 @@ jobs:
       # The runner has Docker, so the real sandbox isolation test runs here too.
       - run: pytest -v
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]" pip-audit
+      # Fails the build when an installed dependency has a known vulnerability.
+      - run: pip-audit --skip-editable
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:

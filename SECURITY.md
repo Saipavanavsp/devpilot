@@ -9,6 +9,11 @@ DevPilot never stores keys in the repository.
 - Run logs (`runs/`) and agent workspaces (`workspace/`) are local only and gitignored.
 - Every push and pull request is scanned with [gitleaks](https://github.com/gitleaks/gitleaks) in CI, and the optional pre-commit hooks run gitleaks and a private-key check before each commit.
 - GitHub secret scanning and push protection are enabled on the repository.
+- CI runs [pip-audit](https://github.com/pypa/pip-audit) on every push and fails if an installed dependency has a known vulnerability.
+
+## Local models
+
+With `DEVPILOT_PROVIDER=ollama`, prompts, including the repository's code, go only to the Ollama server at `OLLAMA_URL`. DevPilot refuses plain http to any host other than localhost, and connects to a local server directly, ignoring `HTTP_PROXY` and the system proxy settings, so a proxy never sees that traffic. Ollama listens on 127.0.0.1 by default; don't set `OLLAMA_HOST=0.0.0.0` unless you mean to share the model with your network, because the Ollama API has no authentication.
 
 If you fork the project, keep your keys in `.env` or your CI provider's secret store, and rotate any key that is ever committed by mistake, even if the commit is removed afterwards.
 

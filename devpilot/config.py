@@ -6,8 +6,12 @@ from dotenv import load_dotenv
 
 from devpilot.sandbox import DEFAULT_BASE_IMAGE
 
-PROVIDERS = {"anthropic", "gemini"}
-DEFAULT_MODELS = {"anthropic": "claude-sonnet-5-5", "gemini": "gemini-3.6-flash"}
+PROVIDERS = {"anthropic", "gemini", "ollama"}
+DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-5-5",
+    "gemini": "gemini-3.6-flash",
+    "ollama": "qwen3:8b",
+}
 API_KEY_VARS = {"anthropic": "ANTHROPIC_API_KEY", "gemini": "GOOGLE_API_KEY"}
 
 
@@ -33,6 +37,8 @@ MODEL_PRICES: dict[str, ModelPrice] = {
 
 # Unknown models are priced at the most expensive tier so the cost limit errs on the safe side.
 FALLBACK_PRICE = max(MODEL_PRICES.values(), key=lambda price: price.output)
+# Local models cost nothing per token; the token limit still bounds a run.
+FREE_PRICE = ModelPrice(input=0.0, output=0.0, cache_read=0.0, cache_write=0.0)
 
 
 class ConfigError(Exception):
@@ -55,6 +61,8 @@ class Settings:
     sandbox_image: str = DEFAULT_BASE_IMAGE
     sandbox_network: bool = False
     sandbox_install_deps: bool = True
+    ollama_url: str = "http://localhost:11434"
+    ollama_num_ctx: int = 32_768
     runs_dir: Path = Path("runs")
     workspace_dir: Path = Path("workspace")
     # Web UI access control.
@@ -65,6 +73,8 @@ class Settings:
     web_allowed_hosts: tuple[str, ...] = ()
 
     def require_api_key(self) -> str:
+        if self.provider == "ollama":
+            return ""  # local models need no key
         key = self.google_api_key if self.provider == "gemini" else self.anthropic_api_key
         if not key:
             raise ConfigError(
@@ -79,6 +89,8 @@ class Settings:
 
     @property
     def price(self) -> ModelPrice:
+        if self.provider == "ollama":
+            return FREE_PRICE
         return MODEL_PRICES.get(self.model, FALLBACK_PRICE)
 
 
@@ -144,6 +156,8 @@ def load_settings(env_file: str | Path | None = ".env") -> Settings:
         sandbox_image=os.environ.get("DEVPILOT_SANDBOX_IMAGE") or DEFAULT_BASE_IMAGE,
         sandbox_network=_bool("DEVPILOT_SANDBOX_NETWORK", False),
         sandbox_install_deps=_bool("DEVPILOT_SANDBOX_INSTALL_DEPS", True),
+        ollama_url=os.environ.get("OLLAMA_URL") or "http://localhost:11434",
+        ollama_num_ctx=_int("DEVPILOT_OLLAMA_NUM_CTX", 32_768),
         runs_dir=Path(os.environ.get("DEVPILOT_RUNS_DIR") or "runs"),
         workspace_dir=Path(os.environ.get("DEVPILOT_WORKSPACE_DIR") or "workspace"),
         web_token=os.environ.get("DEVPILOT_WEB_TOKEN") or None,

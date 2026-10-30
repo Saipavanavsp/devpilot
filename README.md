@@ -56,7 +56,7 @@ It is written from scratch in Python on top of the Claude Messages API with tool
 - **Interfaces**: a CLI (`devpilot run`, `devpilot issue`, `devpilot web`) and a web UI that streams the plan and each agent step live.
 - **Run logs**: every step (thought, tool calls, trimmed results, tokens, cost so far) is written to `runs/<run_id>.json`.
 - **Benchmark**: eight small coding tasks graded by hidden tests, plus a script that runs each task several times and reports success rate, average steps and cost, a no-agent baseline and the exact environment used.
-- **Two model providers**: Claude (default, `claude-sonnet-5-5`) and Gemini (`gemini-3.6-flash`), selected with `DEVPILOT_PROVIDER`.
+- **Three model providers**: Claude (default, `claude-sonnet-5-5`), Gemini (`gemini-3.6-flash`), and free local models through [Ollama](https://ollama.com) (default `qwen3:8b`), selected with `DEVPILOT_PROVIDER`.
 
 ## Architecture
 
@@ -66,7 +66,7 @@ flowchart TD
     I --> P[pipeline.py]
     P -->|issue mode| G1[github_client.py<br/>read issue, clone, branch]
     P --> PL[planner.py<br/>numbered plan]
-    PL --> LLM[(Claude or Gemini API)]
+    PL --> LLM[(Claude, Gemini or local Ollama)]
     P --> A[agent.py<br/>tool-use loop]
     A <-->|messages and tool calls| LLM
     A --> T[tools.py]
@@ -118,6 +118,8 @@ Requirements: Windows 10/11 with WSL 2 and Ubuntu, Docker Desktop, Python 3.12, 
    - `GITHUB_TOKEN` (only for GitHub mode): a token with `repo` scope. If you use the GitHub CLI, `gh auth token` prints one.
 
    `.env` is gitignored; never commit it.
+
+   **No API key? Use a free local model.** Install [Ollama](https://ollama.com), run `ollama pull qwen3:8b` (about 5 GB; `qwen3:4b` if you have under 8 GB of GPU memory), and set `DEVPILOT_PROVIDER=ollama`. Nothing is sent to the internet and it costs nothing. Local models are much weaker than Claude or Gemini and slower on a laptop, so expect lower success rates. `OLLAMA_URL` (default `http://localhost:11434`) must use https if it points at another machine, because your code is sent to it. `DEVPILOT_OLLAMA_NUM_CTX` (default 32768) sets the context window; Ollama silently drops the oldest tokens beyond it.
 5. **Check**: `pytest` should pass, and `ruff check .` should be clean.
 
 On native Windows (PowerShell) the same steps work with `py -3.12 -m venv .venv` and `.venv\Scripts\activate`.
@@ -150,7 +152,11 @@ Settings come from `.env` (see `.env.example`): `DEVPILOT_MODEL`, `DEVPILOT_MAX_
 
 ## Benchmark results
 
-Real runs inside the Docker sandbox, graded by the hidden tests (from [benchmarks/results.md](benchmarks/results.md)):
+Real runs inside the Docker sandbox, graded by the hidden tests (from [benchmarks/results.md](benchmarks/results.md)).
+
+Each task starts from a stub or buggy module with a couple of visible tests. A task is solved only if a separate hidden test suite, copied in after the agent finishes, passes in the sandbox. Every hidden suite was checked against a reference solution: it fails on the starting code and passes on a correct one.
+
+**Gemini smoke test.**
 
 | Task | Model | Solved | Steps | Est. cost (USD) |
 |---|---|---|---|---|
@@ -158,9 +164,29 @@ Real runs inside the Docker sandbox, graded by the hidden tests (from [benchmark
 | 01_slugify (implement from a spec) | `gemini-3-flash-preview` | yes | 12 | 0.0352 |
 | **Total** | | **2/2** | **23** | **0.1387** |
 
-Each task starts from a stub or buggy module with a couple of visible tests. A task is solved only if a separate hidden test suite, copied in after the agent finishes, passes in the sandbox. Every hidden suite was checked against a reference solution: it fails on the starting code and passes on a correct one.
+**These Gemini numbers are a smoke test, not a performance claim.** They are single attempts on Gemini's free tier, which allows about 20 requests per model per day, roughly one or two agent runs. A full run (8 tasks x 3 attempts on Gemini and Claude) was attempted on 30 October 2026. It stopped after one completed attempt (`01_slugify`, solved in 10 steps): Gemini hit the free-tier quota and the Claude account had no API credit. The details are in [benchmarks/results.md](benchmarks/results.md). A real success rate for those models needs a paid Gemini tier or Anthropic credit. The benchmark script is ready for that: `--repeats N` gives a per-task success rate, it reports average steps and cost, the number of hidden tests per task as a rough measure of complexity, and a baseline that grades the untouched starting code (what you get without the agent), and it records the model, sandbox image digest, pytest version and DevPilot commit used. Attempts that fail on an API error (quota, billing) are reported separately and not counted as failed solves. Grading ignores the agent's `conftest.py` files and pytest config, and fails a workspace that shadows pytest, so an agent can't fake the hidden tests. Costs are estimates from token counts and each model's paid list price, not billed amounts.
 
-**These numbers are a smoke test, not a performance claim.** They are single attempts on Gemini's free tier, which allows about 20 requests per model per day, roughly one or two agent runs. A full run (8 tasks x 3 attempts on Gemini and Claude) was attempted on 30 October 2026. It stopped after one completed attempt (`01_slugify`, solved in 10 steps): Gemini hit the free-tier quota and the Claude account had no API credit. The details are in [benchmarks/results.md](benchmarks/results.md). A real success rate needs a paid Gemini tier or Anthropic credit. The benchmark script is ready for that: `--repeats N` gives a per-task success rate, it reports average steps and cost, the number of hidden tests per task as a rough measure of complexity, and a baseline that grades the untouched starting code (what you get without the agent), and it records the model, sandbox image digest, pytest version and DevPilot commit used. Attempts that fail on an API error (quota, billing) are reported separately and not counted as failed solves. Grading ignores the agent's `conftest.py` files and pytest config, and fails a workspace that shadows pytest, so an agent can't fake the hidden tests. Costs are estimates from token counts and each model's paid list price, not billed amounts.
+**Full run on a free local model.** All 8 tasks x 3 attempts with `qwen3:8b` through Ollama (effort `low`, 32k context) on a laptop with an 8 GB GPU, at no cost, in about 3.5 hours:
+
+| Task | Solved | Agent statuses |
+|---|---|---|
+| 01_slugify | 0/3 | unverified, stopped, max_steps |
+| 02_roman_numerals | 0/3 | finished x1, max_steps x2 |
+| 03_lru_cache | 2/3 | finished x2, max_steps x1 |
+| 04_median_bug | 1/2 | finished x2 (1 excluded error) |
+| 05_word_frequency | 1/3 | finished x3 |
+| 06_merge_intervals | 0/2 | finished, unverified (1 excluded error) |
+| 07_sales_report | 0/3 | finished x2, max_steps x1 |
+| 08_token_bucket | 0/3 | max_steps x3 |
+| **Total** | **4/22 (18.2%)** | average 20.9 steps |
+
+An 8B local model solves few of these tasks; the run shows the pipeline working end to end at no cost, not what DevPilot does with a frontier model. 7 attempts ended as "finished" but unsolved: the agent's own tests passed and the hidden tests didn't, so none of them counts as solved. Two of the 24 attempts ended in errors, and the rate depends on how they are counted:
+
+- **4/22 (18.2%)** under the benchmark's standard rule, which leaves out attempts that ended in an error;
+- **4/23 (17.4%)** counting `06_merge_intervals` attempt 3 as a failure: the model kept repeating itself until Ollama aborted it;
+- **4/24 (16.7%)** also counting `04_median_bug` attempt 1, which crashed on a DevPilot bug (saving the run log on Windows while OneDrive held the file), fixed since.
+
+Details in [benchmarks/results.md](benchmarks/results.md).
 
 **Live GitHub test.** `devpilot issue Saipavanavsp/devpilot-demo 1` (on `gemini-3.1-flash-lite`) read [issue #1](https://github.com/Saipavanavsp/devpilot-demo/issues/1), reproduced the bug with a test, fixed `Inventory.remove()`, added four tests and opened [pull request #2](https://github.com/Saipavanavsp/devpilot-demo/pull/2) in 13 steps (estimated $0.01).
 
@@ -189,6 +215,7 @@ Agents that run code need guardrails. DevPilot layers them:
 - **A hard kill leaves containers behind.** Normal exits and Ctrl+C remove them, but a killed process doesn't. Clean up with `docker rm -f $(docker ps -aq --filter name=devpilot-)`.
 - **Network access trusts the repository.** With `DEVPILOT_SANDBOX_NETWORK=true`, and during dependency setup, containers can reach the network, including services on the host (for example via `host.docker.internal` on Docker Desktop).
 - **The command blocklist can be bypassed.** It's a speed bump; the container is the security boundary.
+- **No context management yet.** Long runs can outgrow a local model's context window, and Ollama then drops the oldest messages, including the instructions.
 
 ## Project layout
 
@@ -201,7 +228,7 @@ devpilot/
   safety.py         command blocklist
   github_client.py  git and GitHub API
   pipeline.py       local and GitHub run flows
-  providers/        Claude and Gemini adapters
+  providers/        Claude, Gemini and Ollama adapters
   runlog.py         JSON run logs and live events
   config.py         settings from .env
   cli.py            command-line interface

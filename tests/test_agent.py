@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 
-from devpilot.agent import MAX_UNVERIFIED_FINISHES, NOT_VERIFIED, NUDGE, Agent
+from devpilot.agent import CUT_OFF, MAX_UNVERIFIED_FINISHES, NOT_VERIFIED, NUDGE, Agent
 from devpilot.config import Settings
 from devpilot.planner import PlanningError, make_plan
 from devpilot.runlog import RunLog
@@ -145,6 +145,24 @@ def test_text_answer_after_nudge_is_not_a_success(settings, workspace, fake_sand
     assert client.calls[1]["messages"][-1] == {"role": "user", "content": NUDGE}
     assert result.status == "stopped"
     assert result.summary == "All done."
+
+
+def test_reply_cut_off_before_a_tool_call_is_not_a_stop(settings, workspace, fake_sandbox):
+    agent, client, _ = make_agent(
+        [
+            response(text("Let me think about this at great length..."), stop_reason="max_tokens"),
+            response(text("Still thinking..."), stop_reason="max_tokens"),
+            verified_finish(),
+        ],
+        settings,
+        workspace,
+        fake_sandbox,
+    )
+
+    result = agent.run("task", ["step"])
+
+    assert client.calls[1]["messages"][-1] == {"role": "user", "content": CUT_OFF}
+    assert result.status == "finished"
 
 
 def test_finish_is_rejected_until_tests_pass(settings, workspace, fake_sandbox):

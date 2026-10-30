@@ -89,6 +89,17 @@ def test_gemini_provider_has_its_own_default_model_and_key(monkeypatch):
     assert settings.price == MODEL_PRICES["gemini-3.6-flash"]
 
 
+def test_ollama_provider_is_free_and_keyless(monkeypatch):
+    monkeypatch.setenv("DEVPILOT_PROVIDER", "ollama")
+
+    settings = load_settings(None)
+
+    assert settings.model == "qwen3:8b"
+    assert settings.require_api_key() == ""
+    assert settings.price.output == 0.0
+    assert settings.ollama_url == "http://localhost:11434"
+
+
 def test_process_environment_overrides_env_file(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text("DEVPILOT_MODEL=claude-opus-5-5\n")

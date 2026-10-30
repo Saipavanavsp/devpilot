@@ -17,7 +17,14 @@ from devpilot.github_client import (
     _auth_env,
     validate_repo_name,
 )
-from devpilot.pipeline import RunOutcome, issue_to_task, pr_block_reason, pr_title, run_on_github
+from devpilot.pipeline import (
+    RunOutcome,
+    issue_to_task,
+    pr_block_reason,
+    pr_title,
+    run_on_github,
+    run_task,
+)
 from tests.conftest import FakeSandbox
 from tests.fakes import claude_provider, plan_response, response, tool_use, verified_finish
 
@@ -214,6 +221,26 @@ def test_no_pr_when_agent_skips_the_tests(tmp_path, remote):
     assert outcome.pr_url is None
     assert outcome.pr_skipped == "No pull request opened: the run ended with status 'unverified'."
     github.create_pull_request.assert_not_called()
+
+
+def test_run_log_inside_the_workspace_does_not_invalidate_tests(tmp_path):
+    """`devpilot run` defaults to --workspace . with runs/ inside it; the log changes every step."""
+    (tmp_path / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    provider, _ = claude_provider(
+        [
+            plan_response("Run tests"),
+            response(tool_use("run_tests")),
+            response(tool_use("finish", summary="Already correct.")),  # a separate turn
+        ]
+    )
+    settings = Settings(anthropic_api_key="k", github_token=None, runs_dir=tmp_path / "runs")
+
+    outcome = run_task(
+        "check", tmp_path, settings, provider=provider, sandbox_factory=fake_sandbox_factory
+    )
+
+    assert outcome.status == "finished"
+    assert outcome.tests_passed is True
 
 
 @pytest.mark.parametrize(

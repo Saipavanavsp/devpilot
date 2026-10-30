@@ -40,6 +40,10 @@ NOT_VERIFIED = (
 # Unverified finish calls allowed before the run ends as "unverified".
 MAX_UNVERIFIED_FINISHES = 3
 MALFORMED = "Your last tool call could not be parsed. Call the tool again with valid arguments."
+CUT_OFF = (
+    "Your response hit the output limit before you called a tool. Don't reason at length: "
+    "call the next tool now."
+)
 TRUNCATED = (
     "Your response was cut off before this tool call was complete. "
     "Retry with smaller steps, e.g. write large files in parts."
@@ -120,6 +124,10 @@ class Agent:
                 self._log_step(step, turn, [])
                 if turn.stop == "malformed":
                     conversation.add_user_message(MALFORMED)
+                    continue
+                if turn.stop == "max_tokens":
+                    # Cut off mid-reasoning, not a decision to stop; the step limit bounds this.
+                    conversation.add_user_message(CUT_OFF)
                     continue
                 if nudged:
                     # Only a verified finish call counts as success.

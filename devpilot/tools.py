@@ -3,7 +3,7 @@ import os
 import re
 import shlex
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -147,17 +147,22 @@ def _is_link(dirpath: str, name: str) -> bool:
     return os.path.islink(os.path.join(dirpath, name))
 
 
-def workspace_fingerprint(root: Path) -> str:
+def workspace_fingerprint(root: Path, exclude: frozenset[Path] = frozenset()) -> str:
     """Hash the workspace's files, to detect any change to the code since the tests ran.
 
     Contents are hashed because an edit can keep the size and land within the filesystem's
     timestamp granularity; very large files fall back to size and modification time.
     Symlinks and special files are never followed or opened: code in the sandbox can create
     them, and reading a FIFO or a link to /dev/zero on the host would hang or exhaust memory.
+    Directories in exclude (DevPilot's own run logs, if they live in the workspace) are skipped.
     """
     digest = hashlib.sha256()
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORED_DIRS)
+        dirnames[:] = sorted(
+            d
+            for d in dirnames
+            if d not in IGNORED_DIRS and (Path(dirpath) / d).resolve() not in exclude
+        )
         for filename in sorted([*filenames, *(d for d in dirnames if _is_link(dirpath, d))]):
             path = Path(dirpath) / filename
             try:
@@ -184,8 +189,11 @@ class ToolExecutor:
         *,
         command_timeout: int = 120,
         test_command: str = DEFAULT_TEST_COMMAND,
+        untracked_dirs: Iterable[Path] = (),
     ) -> None:
         self.workspace = workspace.resolve()
+        # Changes here don't invalidate a test run (e.g. the run log, written every step).
+        self.untracked_dirs = frozenset(path.resolve() for path in untracked_dirs)
         self.sandbox = sandbox
         self.command_timeout = command_timeout
         self.test_command = test_command
@@ -303,7 +311,7 @@ class ToolExecutor:
         self.last_tests_passed = tests_passed_in(result)
         if not target:
             passed = self.last_tests_passed
-            self._verified_state = workspace_fingerprint(self.workspace) if passed else None
+            self._verified_state = self._fingerprint() if passed else None
         output = _format_command_result(result)
         if result.exit_code == 0 and not self.last_tests_passed:
             output += NOTHING_PASSED
@@ -311,9 +319,10 @@ class ToolExecutor:
 
     def tests_verified(self) -> bool:
         """True if the full suite passed and the workspace hasn't changed since."""
-        return self._verified_state is not None and self._verified_state == workspace_fingerprint(
-            self.workspace
-        )
+        return self._verified_state is not None and self._verified_state == self._fingerprint()
+
+    def _fingerprint(self) -> str:
+        return workspace_fingerprint(self.workspace, self.untracked_dirs)
 
     @property
     def tests_passed(self) -> bool | None:

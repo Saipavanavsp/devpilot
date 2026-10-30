@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
@@ -8,6 +9,9 @@ from typing import Any
 
 Event = dict[str, Any]
 Listener = Callable[[Event], None]
+
+REPLACE_ATTEMPTS = 5
+REPLACE_RETRY_SECONDS = 0.2
 
 
 def new_run_id() -> str:
@@ -82,4 +86,13 @@ class RunLog:
     def _save(self) -> None:
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self.data, indent=2, default=str), encoding="utf-8")
-        os.replace(tmp, self.path)
+        for attempt in range(REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                # On Windows the replace fails while another process (a sync client such as
+                # OneDrive, an antivirus scanner) briefly holds the old file open.
+                if attempt == REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(REPLACE_RETRY_SECONDS)

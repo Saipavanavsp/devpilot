@@ -17,7 +17,7 @@ flowchart LR
     Tools --> Safety[safety.py]
     Tools --> Sandbox[sandbox.py]
     Sandbox --> Docker[(Docker container)]
-    Providers --> API[(Claude / Gemini API)]
+    Providers --> API[(Claude / Gemini API / local Ollama)]
     GitHub --> GH[(GitHub)]
 ```
 
@@ -33,7 +33,9 @@ A thin layer that hides the differences between model APIs from the rest of the 
 - `claude.py` talks to the Claude Messages API through the official `anthropic` SDK. It sends the tool definitions, appends each response to an append-only history, turns `tool_use` blocks into `ToolCall`s and returns tool results as `tool_result` blocks. It enables prompt caching, the configured effort level, server-side refusal fallbacks and progress-update thinking blocks (short notes the model writes between tool calls, shown in the log and UI) on the models that support them.
 - `gemini.py` does the same with Google's `google-genai` SDK: tool specs become function declarations, the model's content is appended unchanged (Gemini needs its thought signatures back), and function responses are sent back with the call ids the API issued. It retries rate-limited requests with backoff because the free tier allows only a few requests per minute.
 
-Both providers implement `complete_json`, which the planner uses to get schema-constrained JSON back.
+- `ollama.py` talks to a local [Ollama](https://ollama.com) server's `/api/chat` with the standard library (no SDK). Tool specs become function tools, tool results go back as `tool` messages, and `format` carries the planner's JSON schema. It sets `num_ctx` explicitly because Ollama's default context is small and it truncates silently. Thinking is on unless the effort is `low`. Plain http is accepted only for localhost, since the repository's code is sent to the server, and requests to localhost bypass any configured proxy. A response that isn't a JSON object with a well-formed `message` raises `ProviderError` instead of crashing the agent. Local models are priced at zero, so only the step and token limits bound a run.
+
+All providers implement `complete_json`, which the planner uses to get schema-constrained JSON back.
 
 ### `planner.py`
 Sends the task and the repository's file list to the model and asks for a JSON object with 3 to 7 steps. The JSON schema is enforced by the API (structured outputs), so parsing is a single `json.loads`. The plan is stored in the run log and given to the agent as context.
@@ -54,7 +56,7 @@ The seven tools the model can call and their JSON schemas: `list_files`, `read_f
 - File tools work directly on the host workspace folder. Every path goes through `resolve()`, which rejects anything outside the workspace (including `..` tricks and absolute paths) and the `.git` directory.
 - `edit_file` is search and replace. The old text must match exactly once; zero or multiple matches return an error that tells the model what to do instead.
 - `run_command` and `run_tests` never run on the host. They check the command against the blocklist and then run it in the sandbox.
-- After a full, passing `run_tests`, the executor stores a hash of every workspace file. `tests_verified()` compares it with the current state, so any later change, through a file tool or a shell command, makes the agent run the tests again before it can finish. A run counts as passing only if pytest exits 0 and reports at least one passed test (`tests_passed_in`), so an all-skipped or empty suite doesn't verify anything. The hash uses `lstat` and never opens symlinks or special files: sandbox code can create a FIFO or a link to `/dev/zero`, and reading those on a Linux host would hang or exhaust memory.
+- After a full, passing `run_tests`, the executor stores a hash of every workspace file. `tests_verified()` compares it with the current state, so any later change, through a file tool or a shell command, makes the agent run the tests again before it can finish. A run counts as passing only if pytest exits 0 and reports at least one passed test (`tests_passed_in`), so an all-skipped or empty suite doesn't verify anything. DevPilot's own run-log directory is excluded from the hash: `devpilot run` defaults to the current directory, so `runs/` is often inside the workspace and is rewritten every step. The hash uses `lstat` and never opens symlinks or special files: sandbox code can create a FIFO or a link to `/dev/zero`, and reading those on a Linux host would hang or exhaust memory.
 - Long outputs are trimmed in the middle, keeping the start and the end, because test failures usually show up at the end.
 
 ### `safety.py`
@@ -87,7 +89,7 @@ Ties everything together.
 - `run_on_github` covers task and issue modes on a GitHub repository: load the issue (if any), clone into `workspace/`, create a `devpilot/...` branch, solve, then commit, push and open a pull request whose body has the summary, plan, diff stat and test status. `pr_block_reason` checks the outcome again before publishing, independently of the agent: no PR is opened unless the status is `finished` and the tests passed on the final code. The reason is recorded in `RunOutcome.pr_skipped` and the run log. No PR is opened either if nothing changed.
 
 ### `runlog.py`
-`RunLog` writes `runs/<run_id>.json` after every change (atomically, through a temp file), so a crash never loses earlier steps. It also forwards each change as an event to listeners; the CLI prints them and the web UI streams them to the browser.
+`RunLog` writes `runs/<run_id>.json` after every change (atomically, through a temp file), so a crash never loses earlier steps. On Windows the final rename fails while another process, such as a sync client, briefly has the file open, so it is retried a few times. It also forwards each change as an event to listeners; the CLI prints them and the web UI streams them to the browser.
 
 ### `cli.py`
 `devpilot run`, `devpilot issue` and `devpilot web`, built with argparse. Known failures (missing key, Docker not running, GitHub errors) print a one-line error and exit with code 2; an unfinished run exits with 1.

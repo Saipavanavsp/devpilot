@@ -20,8 +20,14 @@ __all__ = [
 
 
 def make_provider(settings: Settings) -> Provider:
-    api_key = settings.require_api_key()
     # Imported lazily so only the SDK for the configured provider has to load.
+    if settings.provider == "ollama":
+        from devpilot.providers.ollama import OllamaProvider
+
+        return OllamaProvider.from_url(
+            settings.ollama_url, settings.model, settings.effort, settings.ollama_num_ctx
+        )
+    api_key = settings.require_api_key()
     if settings.provider == "gemini":
         from devpilot.providers.gemini import GeminiProvider
 

@@ -108,7 +108,12 @@ def _solve(
             setup_report = getattr(sandbox, "setup_report", None)
             if setup_report:
                 log.update(environment=setup_report)
-            tools = ToolExecutor(workspace, sandbox, command_timeout=settings.command_timeout)
+            tools = ToolExecutor(
+                workspace,
+                sandbox,
+                command_timeout=settings.command_timeout,
+                untracked_dirs=[settings.runs_dir],
+            )
             plan, plan_usage = make_plan(provider, task, tools.list_files().content)
             log.set_plan(plan)
             agent_task = task
